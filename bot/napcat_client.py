@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, WebSocketException
 
 logger = logging.getLogger(__name__)
 
@@ -50,27 +51,54 @@ class NapCatClient:
         return {"Authorization": f"Bearer {self.access_token}"}
 
     async def iter_events(self) -> AsyncIterator[dict[str, Any]]:
+        header_arg = "additional_headers"
         while True:
             try:
-                async for event in self._iter_events_once("additional_headers"):
+                async for event in self._iter_events_once(header_arg):
                     yield event
+                logger.warning(
+                    "NapCat WebSocket %s closed without an error; reconnecting in %.1f seconds.",
+                    self.ws_url,
+                    self.reconnect_seconds,
+                )
+                await asyncio.sleep(self.reconnect_seconds)
             except TypeError as exc:
-                if "additional_headers" not in str(exc):
+                if header_arg == "additional_headers" and "additional_headers" in str(exc):
+                    header_arg = "extra_headers"
+                    logger.debug("Falling back to websockets extra_headers parameter.")
+                    continue
+                else:
                     logger.exception("NapCat WebSocket failed with a TypeError.")
                     await asyncio.sleep(self.reconnect_seconds)
-                    continue
-                try:
-                    async for event in self._iter_events_once("extra_headers"):
-                        yield event
-                except Exception:
-                    logger.exception("NapCat WebSocket disconnected; reconnecting soon.")
-                    await asyncio.sleep(self.reconnect_seconds)
+            except asyncio.CancelledError:
+                raise
+            except ConnectionClosed as exc:
+                logger.warning(
+                    "NapCat WebSocket %s closed: code=%s, reason=%s; reconnecting in %.1f seconds.",
+                    self.ws_url,
+                    exc.code,
+                    exc.reason or "<empty>",
+                    self.reconnect_seconds,
+                )
+                await asyncio.sleep(self.reconnect_seconds)
+            except (InvalidHandshake, OSError, WebSocketException):
+                logger.exception(
+                    "NapCat WebSocket %s is unavailable; reconnecting in %.1f seconds.",
+                    self.ws_url,
+                    self.reconnect_seconds,
+                )
+                await asyncio.sleep(self.reconnect_seconds)
             except Exception:
-                logger.exception("NapCat WebSocket disconnected; reconnecting soon.")
+                logger.exception(
+                    "NapCat WebSocket %s failed unexpectedly; reconnecting in %.1f seconds.",
+                    self.ws_url,
+                    self.reconnect_seconds,
+                )
                 await asyncio.sleep(self.reconnect_seconds)
 
     async def _iter_events_once(self, header_arg: str) -> AsyncIterator[dict[str, Any]]:
-        kwargs = {header_arg: self._headers() or None}
+        headers = self._headers()
+        kwargs = {header_arg: headers} if headers else {}
         async with websockets.connect(self.ws_url, **kwargs) as websocket:
             logger.info("Connected to NapCat WebSocket.")
             async for raw_message in websocket:
