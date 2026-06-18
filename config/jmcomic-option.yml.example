@@ -1,0 +1,20 @@
+# Copy this file to config/jmcomic-option.yml and fill in your own settings.
+# Do not commit cookies, tokens, or login information.
+
+client:
+  impl: html
+  retry_times: 5
+  postman:
+    meta_data:
+      headers:
+        User-Agent: "Mozilla/5.0"
+        Cookie: "YOUR_JMCOMIC_COOKIE_HERE"
+
+download:
+  image:
+    decode: true
+
+dir_rule:
+  base_dir: ./data/jmcomic
+  rule: Bd_Aid_Pindex
+

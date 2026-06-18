@@ -1,0 +1,10 @@
+.env
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+.venv/
+venv/
+data/
+config/jmcomic-option.yml
+
