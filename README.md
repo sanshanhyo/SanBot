@@ -8,8 +8,9 @@
 
 - 只处理 QQ 群消息。
 - 使用 OneBot 11 结构化消息段判断是否真的 `@` 了机器人。
-- 支持 `JM123456`、`jm123456`、`123456` 三种输入。
+- 支持 `JM123456`、`jm123456` 两种输入；纯数字不会触发下载。
 - 一条消息只允许一个编号。
+- 先发送封面和标题预览，用户回复确认后才加入下载队列。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
 - JMComic 下载和 PDF 导出在独立子进程执行，超时会终止子进程，避免单个卡死任务堵住队列。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
@@ -65,7 +66,9 @@ BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 MAX_CONCURRENT_JOBS=1
 JOB_TIMEOUT_SECONDS=1800
+PREVIEW_TIMEOUT_SECONDS=30
 JOB_PROGRESS_NOTIFY_SECONDS=60
+JOB_CONFIRM_TIMEOUT_SECONDS=300
 JMCOMIC_OPTION_PATH=./config/jmcomic-option.yml
 DATA_DIR=./data
 ```
@@ -82,7 +85,9 @@ DATA_DIR=./data
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `JOB_TIMEOUT_SECONDS` | 单个任务超时时间，默认 `1800` |
+| `PREVIEW_TIMEOUT_SECONDS` | 获取漫画封面和标题的超时时间，默认 `30` 秒 |
 | `JOB_PROGRESS_NOTIFY_SECONDS` | 群内进度通知间隔，默认 `60` 秒 |
+| `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `300` 秒 |
 | `JMCOMIC_OPTION_PATH` | JMComic 配置文件路径 |
 | `DATA_DIR` | 数据目录 |
 
@@ -181,7 +186,13 @@ PDF 生成后会校验：
 用法：@机器人 JM123456
 ```
 
-提交成功后，机器人会立即回复：
+机器人会先发送封面、标题、页数和预计时间，并询问是否下载。用户回复：
+
+```text
+下载
+```
+
+确认后，机器人会加入下载队列并回复：
 
 ```text
 已接收 JM123456，任务编号：xxxx
@@ -302,6 +313,7 @@ Invoke-RestMethod `
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查 |
+| `GET` | `/api/albums/{album_id}/preview` | 获取漫画封面、标题、页数和预计时间 |
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/{job_id}` | 查询任务状态 |
 | `GET` | `/api/jobs/{job_id}/file` | 下载 PDF |

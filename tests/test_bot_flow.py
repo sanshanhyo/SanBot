@@ -6,7 +6,7 @@ from typing import Awaitable
 
 import pytest
 
-from bot.main import BotSettings, _download_and_upload, handle_group_message
+from bot.main import BotSettings, BotState, _download_and_upload, handle_group_message
 from bot.napcat_client import NapCatAPIError
 
 
@@ -17,8 +17,12 @@ class FakeNapCat:
         self.upload_attempts = 0
         self.upload_failures = upload_failures
 
-    async def send_group_msg(self, group_id: str, message: str) -> dict:
+    async def send_group_msg(self, group_id: str, message: str | list[dict]) -> dict:
         self.sent.append((group_id, message))
+        return {"status": "ok", "retcode": 0}
+
+    async def send_group_image(self, group_id: str, image_url: str) -> dict:
+        self.sent.append((group_id, f"IMAGE:{image_url}"))
         return {"status": "ok", "retcode": 0}
 
     async def upload_group_file(self, group_id: str, file_path: str | Path, name: str) -> dict:
@@ -32,6 +36,18 @@ class FakeNapCat:
 class FakeCreateBackend:
     def __init__(self) -> None:
         self.created: list[tuple[str, str, str]] = []
+        self.previewed: list[str] = []
+
+    async def get_album_preview(self, album_id: str) -> dict:
+        self.previewed.append(album_id)
+        return {
+            "album_id": album_id,
+            "title": "A Test Album",
+            "cover_url": "https://example.test/cover.jpg",
+            "page_count": 120,
+            "estimated_seconds": 300,
+            "estimated_text": "预计约 5-8 分钟",
+        }
 
     async def create_job(self, album_id: str, group_id: str, user_id: str) -> dict:
         self.created.append((album_id, group_id, user_id))
@@ -86,6 +102,7 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
     await handle_group_message(
         _group_event([{"type": "at", "data": {"qq": "12345"}}]),
         _settings(tmp_path),
+        BotState(pending_downloads={}),
         napcat,  # type: ignore[arg-type]
         backend,  # type: ignore[arg-type]
         TaskCollector(),
@@ -96,10 +113,11 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_handle_group_message_creates_job(tmp_path: Path) -> None:
+async def test_handle_group_message_sends_preview_without_creating_job(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
     tasks = TaskCollector()
+    state = BotState(pending_downloads={})
 
     await handle_group_message(
         _group_event(
@@ -109,14 +127,55 @@ async def test_handle_group_message_creates_job(tmp_path: Path) -> None:
             ]
         ),
         _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    assert backend.previewed == ["123456"]
+    assert backend.created == []
+    assert tasks.count == 0
+    assert napcat.sent[0] == ("10001", "IMAGE:https://example.test/cover.jpg")
+    assert "标题：A Test Album" in napcat.sent[1][1]
+    assert ("10001", "20001") in state.pending_downloads
+
+
+@pytest.mark.asyncio
+async def test_confirm_download_creates_job(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    tasks = TaskCollector()
+    state = BotState(pending_downloads={})
+    settings = _settings(tmp_path)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "下载"}}]),
+        settings,
+        state,
         napcat,  # type: ignore[arg-type]
         backend,  # type: ignore[arg-type]
         tasks,
     )
 
     assert backend.created == [("123456", "10001", "20001")]
-    assert napcat.sent == [("10001", "已接收 JM123456，任务编号：job-123")]
+    assert napcat.sent[-1] == ("10001", "已接收 JM123456，任务编号：job-123\n预计时间：预计约 5-8 分钟")
     assert tasks.count == 1
+    assert state.pending_downloads == {}
 
 
 @pytest.mark.asyncio
@@ -160,4 +219,3 @@ async def test_upload_retries_until_success(monkeypatch: pytest.MonkeyPatch, tmp
     assert napcat.upload_attempts == 3
     assert len(napcat.uploads) == 1
     assert napcat.sent[-1][1].startswith("JM123456 已完成")
-

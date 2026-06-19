@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import signal
+import subprocess
+import sys
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +17,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
-from .models import JobCreate, JobCreateResponse, JobResponse
+from .models import AlbumPreviewResponse, JobCreate, JobCreateResponse, JobResponse
 from .task_manager import DuplicateJobError, JobManager, JobManagerConfig
 
 logger = logging.getLogger(__name__)
@@ -48,6 +54,7 @@ class BackendSettings:
     jmcomic_option_path: Path
     max_concurrent_jobs: int
     job_timeout_seconds: int
+    preview_timeout_seconds: int
     backend_api_token: str | None
 
     @classmethod
@@ -58,6 +65,7 @@ class BackendSettings:
             jmcomic_option_path=Path(os.getenv("JMCOMIC_OPTION_PATH", "./config/jmcomic-option.yml")),
             max_concurrent_jobs=max(1, _env_int("MAX_CONCURRENT_JOBS", 1)),
             job_timeout_seconds=max(1, _env_int("JOB_TIMEOUT_SECONDS", 1800)),
+            preview_timeout_seconds=max(1, _env_int("PREVIEW_TIMEOUT_SECONDS", 30)),
             backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
         )
 
@@ -127,6 +135,121 @@ async def create_job(
             },
         ) from exc
     return JobCreateResponse(job_id=job["job_id"], status=job["status"])
+
+
+class PreviewWorkerError(Exception):
+    def __init__(self, user_message: str) -> None:
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
+@app.get("/api/albums/{album_id}/preview", response_model=AlbumPreviewResponse)
+async def get_album_preview(
+    album_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> AlbumPreviewResponse:
+    _require_api_token(request, authorization)
+    if not album_id.isdigit() or len(album_id) > 12:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid album_id")
+
+    settings: BackendSettings = request.app.state.settings
+    result_path = settings.data_dir.resolve() / "previews" / f"{uuid.uuid4()}.json"
+    try:
+        preview = await _run_preview_worker(
+            album_id,
+            settings.jmcomic_option_path,
+            result_path,
+            settings.preview_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="获取漫画信息超时，请稍后重试",
+        ) from exc
+    except PreviewWorkerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.user_message) from exc
+    finally:
+        result_path.unlink(missing_ok=True)
+
+    return AlbumPreviewResponse(**preview)
+
+
+async def _run_preview_worker(
+    album_id: str,
+    option_path: Path,
+    result_path: Path,
+    timeout_seconds: int,
+) -> dict:
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "backend.preview_worker",
+        "--album-id",
+        album_id,
+        "--option-path",
+        str(option_path),
+        "--result-path",
+        str(result_path),
+    ]
+    kwargs: dict[str, object] = {
+        "stdout": asyncio.subprocess.DEVNULL,
+        "stderr": asyncio.subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    process = await asyncio.create_subprocess_exec(*command, **kwargs)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        await _terminate_process(process)
+        raise
+
+    if not result_path.is_file():
+        raise PreviewWorkerError(f"获取漫画信息失败，退出码：{process.returncode}")
+
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise PreviewWorkerError("获取漫画信息结果无效") from exc
+
+    if not result.get("ok"):
+        raise PreviewWorkerError(result.get("user_message") or "获取漫画信息失败，请稍后重试")
+    preview = result.get("preview")
+    if not isinstance(preview, dict):
+        raise PreviewWorkerError("获取漫画信息结果无效")
+    return preview
+
+
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    await process.wait()
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)

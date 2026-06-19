@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Any
 
 from .backend_client import BackendClient, BackendError, DuplicateJobError
-from .message_parser import ParseAction, parse_group_message
+from .message_parser import ParseAction, parse_group_message, text_from_segments
 from .napcat_client import NapCatAPIError, NapCatClient
 
 logger = logging.getLogger(__name__)
 
 USAGE_MESSAGE = "用法：@机器人 JM123456"
 ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes", "ok"}
+CANCEL_WORDS = {"取消", "不要", "否", "不下", "n", "no"}
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -54,6 +56,7 @@ class BotSettings:
     job_timeout_seconds: int
     poll_interval_seconds: float = 5.0
     progress_notify_seconds: int = 60
+    confirm_timeout_seconds: int = 300
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -72,7 +75,30 @@ class BotSettings:
             job_timeout_seconds=max(1, _env_int("JOB_TIMEOUT_SECONDS", 1800)),
             poll_interval_seconds=max(1, _env_int("JOB_POLL_INTERVAL_SECONDS", 5)),
             progress_notify_seconds=max(10, _env_int("JOB_PROGRESS_NOTIFY_SECONDS", 60)),
+            confirm_timeout_seconds=max(30, _env_int("JOB_CONFIRM_TIMEOUT_SECONDS", 300)),
         )
+
+
+@dataclass(frozen=True)
+class PendingDownload:
+    album_id: str
+    title: str
+    estimated_text: str
+    expires_at: float
+
+
+@dataclass
+class BotState:
+    pending_downloads: dict[tuple[str, str], PendingDownload]
+
+    def cleanup(self, now: float) -> None:
+        expired = [
+            key
+            for key, pending in self.pending_downloads.items()
+            if pending.expires_at <= now
+        ]
+        for key in expired:
+            self.pending_downloads.pop(key, None)
 
 
 def _safe_filename(name: str, fallback: str) -> str:
@@ -84,17 +110,28 @@ def _safe_filename(name: str, fallback: str) -> str:
 async def handle_group_message(
     event: dict[str, Any],
     settings: BotSettings,
+    state: BotState,
     napcat: NapCatClient,
     backend: BackendClient,
     spawn_task: Callable[[Awaitable[None]], None],
 ) -> None:
-    parse_result = parse_group_message(event, settings.bot_qq_id)
-    if parse_result.action == ParseAction.IGNORE:
+    if event.get("message_type") != "group":
+        return
+    if str(event.get("user_id")) == str(settings.bot_qq_id):
         return
 
     group_id = str(event.get("group_id") or "")
     user_id = str(event.get("user_id") or "")
     if not group_id or not user_id:
+        return
+
+    now = asyncio.get_running_loop().time()
+    state.cleanup(now)
+    if await _handle_pending_confirmation(event, group_id, user_id, settings, state, napcat, backend, spawn_task):
+        return
+
+    parse_result = parse_group_message(event, settings.bot_qq_id)
+    if parse_result.action == ParseAction.IGNORE:
         return
 
     if parse_result.action == ParseAction.USAGE:
@@ -110,6 +147,107 @@ async def handle_group_message(
         await _safe_send(napcat, group_id, USAGE_MESSAGE)
         return
 
+    await _send_album_preview(album_id, group_id, user_id, settings, state, napcat, backend)
+
+
+async def _handle_pending_confirmation(
+    event: dict[str, Any],
+    group_id: str,
+    user_id: str,
+    settings: BotSettings,
+    state: BotState,
+    napcat: NapCatClient,
+    backend: BackendClient,
+    spawn_task: Callable[[Awaitable[None]], None],
+) -> bool:
+    key = (group_id, user_id)
+    pending = state.pending_downloads.get(key)
+    if pending is None:
+        return False
+
+    text = text_from_segments(event.get("message")).strip().lower()
+    if not text:
+        return False
+
+    if text in CANCEL_WORDS:
+        state.pending_downloads.pop(key, None)
+        await _safe_send(napcat, group_id, f"已取消 JM{pending.album_id}。")
+        return True
+
+    if text not in CONFIRM_WORDS:
+        return False
+
+    state.pending_downloads.pop(key, None)
+    await _create_job_and_monitor(
+        pending.album_id,
+        group_id,
+        user_id,
+        settings,
+        napcat,
+        backend,
+        spawn_task,
+        extra_message=f"预计时间：{pending.estimated_text}",
+    )
+    return True
+
+
+async def _send_album_preview(
+    album_id: str,
+    group_id: str,
+    user_id: str,
+    settings: BotSettings,
+    state: BotState,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        preview = await backend.get_album_preview(album_id)
+    except BackendError as exc:
+        logger.exception("Could not fetch album preview.")
+        await _safe_send(napcat, group_id, f"JM{album_id} 获取信息失败：{exc}")
+        return
+
+    title = str(preview.get("title") or f"JM{album_id}")
+    estimated_text = str(preview.get("estimated_text") or "预计时间未知")
+    cover_url = preview.get("cover_url")
+    page_count = preview.get("page_count")
+
+    if isinstance(cover_url, str) and cover_url:
+        try:
+            await napcat.send_group_image(group_id, cover_url)
+        except NapCatAPIError:
+            logger.exception("Could not send album cover.")
+
+    page_text = f"{page_count} 页" if isinstance(page_count, int) and page_count > 0 else "页数未知"
+    await _safe_send(
+        napcat,
+        group_id,
+        (
+            f"JM{album_id}\n"
+            f"标题：{title}\n"
+            f"页数：{page_text}\n"
+            f"预计时间：{estimated_text}\n"
+            f"回复“下载”确认加入队列，回复“取消”放弃。"
+        ),
+    )
+    state.pending_downloads[(group_id, user_id)] = PendingDownload(
+        album_id=album_id,
+        title=title,
+        estimated_text=estimated_text,
+        expires_at=asyncio.get_running_loop().time() + settings.confirm_timeout_seconds,
+    )
+
+
+async def _create_job_and_monitor(
+    album_id: str,
+    group_id: str,
+    user_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+    spawn_task: Callable[[Awaitable[None]], None],
+    extra_message: str | None = None,
+) -> None:
     try:
         created = await backend.create_job(album_id, group_id, user_id)
     except DuplicateJobError as exc:
@@ -122,7 +260,10 @@ async def handle_group_message(
         return
 
     job_id = str(created["job_id"])
-    await _safe_send(napcat, group_id, f"已接收 JM{album_id}，任务编号：{job_id}")
+    message = f"已接收 JM{album_id}，任务编号：{job_id}"
+    if extra_message:
+        message = f"{message}\n{extra_message}"
+    await _safe_send(napcat, group_id, message)
     spawn_task(monitor_job(job_id, album_id, group_id, settings, napcat, backend))
 
 
@@ -242,6 +383,7 @@ async def run_bot() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
     pending_tasks: set[asyncio.Task[None]] = set()
+    state = BotState(pending_downloads={})
     async with NapCatClient(
         settings.napcat_ws_url,
         settings.napcat_http_url,
@@ -257,6 +399,7 @@ async def run_bot() -> None:
                     handle_group_message(
                         event,
                         settings,
+                        state,
                         napcat,
                         backend,
                         lambda awaitable: _spawn_task(pending_tasks, awaitable),

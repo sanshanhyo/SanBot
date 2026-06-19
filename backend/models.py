@@ -34,3 +34,12 @@ class JobResponse(BaseModel):
     error_message: str | None = None
     downloaded_files: int = 0
     progress_message: str | None = None
+
+
+class AlbumPreviewResponse(BaseModel):
+    album_id: str
+    title: str
+    cover_url: str | None = None
+    page_count: int | None = None
+    estimated_seconds: int | None = None
+    estimated_text: str

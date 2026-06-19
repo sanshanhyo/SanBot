@@ -49,3 +49,16 @@ def test_usage_when_no_number() -> None:
 
     assert result.action == ParseAction.USAGE
 
+
+def test_plain_number_requires_jm_prefix() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 123456"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.USAGE

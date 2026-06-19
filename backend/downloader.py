@@ -37,6 +37,10 @@ class DownloadError(DownloaderError):
     pass
 
 
+class PreviewError(DownloaderError):
+    pass
+
+
 def sanitize_filename(name: str, fallback: str = "output.pdf", max_length: int = 180) -> str:
     cleaned = ILLEGAL_FILENAME_CHARS_RE.sub("_", name)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
@@ -175,3 +179,64 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
         raise DownloadError(_download_error_message(exc)) from exc
 
     return _finalize_single_pdf(album_id, output_dir)
+
+
+def estimate_download_seconds(page_count: int | None) -> int | None:
+    if not page_count or page_count <= 0:
+        return None
+    return max(60, int(page_count * 2.5))
+
+
+def format_estimated_time(seconds: int | None) -> str:
+    if seconds is None:
+        return "预计时间未知，取决于页数和网络"
+    minutes = max(1, round(seconds / 60))
+    high_minutes = max(minutes + 1, round(minutes * 1.5))
+    if minutes == high_minutes:
+        return f"预计约 {minutes} 分钟"
+    return f"预计约 {minutes}-{high_minutes} 分钟"
+
+
+def fetch_album_preview(album_id: str, option_path: str | Path) -> dict:
+    if not ALBUM_ID_RE.fullmatch(album_id):
+        raise PreviewError("编号格式错误：只允许 1 到 12 位数字")
+
+    option_file = Path(option_path).expanduser().resolve()
+    if not option_file.is_file():
+        raise PreviewError("JMComic 配置文件不存在，请检查 JMCOMIC_OPTION_PATH")
+
+    try:
+        from jmcomic import JmcomicText, create_option_by_file
+    except ImportError as exc:
+        raise PreviewError("未安装 jmcomic，请先安装项目依赖") from exc
+
+    stdout = StringIO()
+    stderr = StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            option = create_option_by_file(str(option_file))
+            album = option.new_jm_client().get_album_detail(album_id)
+        _log_captured_jmcomic_output(stdout, stderr)
+    except DownloaderError:
+        raise
+    except Exception as exc:
+        _log_captured_jmcomic_output(stdout, stderr)
+        if _looks_like_missing_album(exc):
+            raise PreviewError("JM 内容不存在或不可访问") from exc
+        raise PreviewError(_download_error_message(exc)) from exc
+
+    page_count = getattr(album, "page_count", None)
+    try:
+        page_count = int(page_count) if page_count is not None else None
+    except (TypeError, ValueError):
+        page_count = None
+
+    estimated_seconds = estimate_download_seconds(page_count)
+    return {
+        "album_id": str(album_id),
+        "title": str(getattr(album, "title", None) or getattr(album, "name", None) or f"JM{album_id}"),
+        "cover_url": JmcomicText.get_album_cover_url(album_id),
+        "page_count": page_count,
+        "estimated_seconds": estimated_seconds,
+        "estimated_text": format_estimated_time(estimated_seconds),
+    }

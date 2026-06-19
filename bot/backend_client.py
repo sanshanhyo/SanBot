@@ -65,6 +65,17 @@ class BackendClient:
             raise BackendError("后端查询任务失败") from exc
         return response.json()
 
+    async def get_album_preview(self, album_id: str) -> dict[str, Any]:
+        try:
+            response = await self._client.get(f"/api/albums/{album_id}/preview", headers=self._headers())
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            message = self._error_detail_message(exc.response) or "获取漫画信息失败"
+            raise BackendError(message) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试") from exc
+        return response.json()
+
     async def download_file(self, job_id: str, dest_path: str | Path) -> Path:
         dest = Path(dest_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -100,3 +111,16 @@ class BackendClient:
         detail = data.get("detail")
         return detail if isinstance(detail, dict) else {}
 
+    @staticmethod
+    def _error_detail_message(response: httpx.Response) -> str | None:
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        detail = data.get("detail")
+        if isinstance(detail, str):
+            return detail
+        if isinstance(detail, dict):
+            message = detail.get("message")
+            return message if isinstance(message, str) else None
+        return None

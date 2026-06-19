@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-ALBUM_PATTERN = re.compile(r"(?i)(?:JM\s*)?(\d{1,12})")
+ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
 
 
 class ParseAction(StrEnum):
@@ -36,7 +36,7 @@ def has_at_bot(message_segments: Any, bot_qq_id: str) -> bool:
     return False
 
 
-def _text_from_segments(message_segments: Any) -> str:
+def text_from_segments(message_segments: Any) -> str:
     if not isinstance(message_segments, list):
         return ""
 
@@ -54,7 +54,7 @@ def _text_from_segments(message_segments: Any) -> str:
 
 
 def extract_album_id(message_segments: Any) -> tuple[str | None, str | None]:
-    text = _text_from_segments(message_segments)
+    text = text_from_segments(message_segments)
     matches = [match.group(1) for match in ALBUM_PATTERN.finditer(text)]
     if not matches:
         return None, None
@@ -80,4 +80,3 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     if album_id is None:
         return ParseResult(ParseAction.USAGE)
     return ParseResult(ParseAction.OK, album_id=album_id)
-

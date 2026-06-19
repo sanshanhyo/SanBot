@@ -110,10 +110,16 @@ class NapCatClient:
                 if isinstance(event, dict):
                     yield event
 
-    async def send_group_msg(self, group_id: str, message: str) -> dict[str, Any]:
+    async def send_group_msg(self, group_id: str, message: str | list[dict[str, Any]]) -> dict[str, Any]:
         return await self._call_api(
             "/send_group_msg",
             {"group_id": str(group_id), "message": message},
+        )
+
+    async def send_group_image(self, group_id: str, image_url: str) -> dict[str, Any]:
+        return await self.send_group_msg(
+            group_id,
+            [{"type": "image", "data": {"file": image_url}}],
         )
 
     async def upload_group_file(self, group_id: str, file_path: str | Path, name: str) -> dict[str, Any]:
