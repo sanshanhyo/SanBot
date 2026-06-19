@@ -48,6 +48,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid float for %s; using %s.", name, default)
+        return default
+
+
 @dataclass(frozen=True)
 class BackendSettings:
     data_dir: Path
@@ -55,6 +66,8 @@ class BackendSettings:
     max_concurrent_jobs: int
     job_timeout_seconds: int
     preview_timeout_seconds: int
+    job_stall_timeout_seconds: int
+    job_progress_check_seconds: float
     backend_api_token: str | None
 
     @classmethod
@@ -66,6 +79,8 @@ class BackendSettings:
             max_concurrent_jobs=max(1, _env_int("MAX_CONCURRENT_JOBS", 1)),
             job_timeout_seconds=max(1, _env_int("JOB_TIMEOUT_SECONDS", 1800)),
             preview_timeout_seconds=max(1, _env_int("PREVIEW_TIMEOUT_SECONDS", 30)),
+            job_stall_timeout_seconds=max(0, _env_int("JOB_STALL_TIMEOUT_SECONDS", 300)),
+            job_progress_check_seconds=max(1.0, _env_float("JOB_PROGRESS_CHECK_SECONDS", 10.0)),
             backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
         )
 
@@ -84,6 +99,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             option_path=settings.jmcomic_option_path,
             max_concurrent_jobs=settings.max_concurrent_jobs,
             job_timeout_seconds=settings.job_timeout_seconds,
+            job_stall_timeout_seconds=settings.job_stall_timeout_seconds,
+            progress_interval_seconds=settings.job_progress_check_seconds,
         )
     )
     app.state.settings = settings
@@ -260,6 +277,19 @@ async def get_job(
 ) -> JobResponse:
     _require_api_token(request, authorization)
     job = _manager(request).get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
+    return JobResponse(**job)
+
+
+@app.post("/api/jobs/{job_id}/cancel", response_model=JobResponse)
+async def cancel_job(
+    job_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JobResponse:
+    _require_api_token(request, authorization)
+    job = await _manager(request).cancel_job(job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="job not found")
     return JobResponse(**job)

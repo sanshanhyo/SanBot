@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ USAGE_MESSAGE = "用法：@机器人 JM123456"
 ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes", "ok"}
 CANCEL_WORDS = {"取消", "不要", "否", "不下", "n", "no"}
+ACTIVE_CANCEL_WORDS = CANCEL_WORDS | {"取消下载", "取消任务", "停止下载", "停止任务"}
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -87,9 +88,16 @@ class PendingDownload:
     expires_at: float
 
 
+@dataclass(frozen=True)
+class ActiveDownload:
+    job_id: str
+    album_id: str
+
+
 @dataclass
 class BotState:
-    pending_downloads: dict[tuple[str, str], PendingDownload]
+    pending_downloads: dict[tuple[str, str], PendingDownload] = field(default_factory=dict)
+    active_downloads: dict[tuple[str, str], ActiveDownload] = field(default_factory=dict)
 
     def cleanup(self, now: float) -> None:
         expired = [
@@ -129,6 +137,8 @@ async def handle_group_message(
     state.cleanup(now)
     if await _handle_pending_confirmation(event, group_id, user_id, settings, state, napcat, backend, spawn_task):
         return
+    if await _handle_active_cancel(event, group_id, user_id, state, napcat, backend):
+        return
 
     parse_result = parse_group_message(event, settings.bot_qq_id)
     if parse_result.action == ParseAction.IGNORE:
@@ -145,6 +155,15 @@ async def handle_group_message(
     album_id = parse_result.album_id
     if album_id is None:
         await _safe_send(napcat, group_id, USAGE_MESSAGE)
+        return
+
+    active = state.active_downloads.get((group_id, user_id))
+    if active is not None:
+        await _safe_send(
+            napcat,
+            group_id,
+            f"你已有 JM{active.album_id} 正在下载或等待上传，回复“取消下载”可以停止当前任务。",
+        )
         return
 
     await _send_album_preview(album_id, group_id, user_id, settings, state, napcat, backend)
@@ -183,11 +202,41 @@ async def _handle_pending_confirmation(
         group_id,
         user_id,
         settings,
+        state,
         napcat,
         backend,
         spawn_task,
         extra_message=f"预计时间：{pending.estimated_text}",
     )
+    return True
+
+
+async def _handle_active_cancel(
+    event: dict[str, Any],
+    group_id: str,
+    user_id: str,
+    state: BotState,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> bool:
+    key = (group_id, user_id)
+    active = state.active_downloads.get(key)
+    if active is None:
+        return False
+
+    text = text_from_segments(event.get("message")).strip().lower()
+    if text not in ACTIVE_CANCEL_WORDS:
+        return False
+
+    try:
+        await backend.cancel_job(active.job_id)
+    except BackendError:
+        logger.exception("Could not cancel job %s.", active.job_id)
+        await _safe_send(napcat, group_id, f"JM{active.album_id} 取消失败，请稍后再试")
+        return True
+
+    state.active_downloads.pop(key, None)
+    await _safe_send(napcat, group_id, f"已取消 JM{active.album_id} 任务。")
     return True
 
 
@@ -243,6 +292,7 @@ async def _create_job_and_monitor(
     group_id: str,
     user_id: str,
     settings: BotSettings,
+    state: BotState,
     napcat: NapCatClient,
     backend: BackendClient,
     spawn_task: Callable[[Awaitable[None]], None],
@@ -264,7 +314,27 @@ async def _create_job_and_monitor(
     if extra_message:
         message = f"{message}\n{extra_message}"
     await _safe_send(napcat, group_id, message)
-    spawn_task(monitor_job(job_id, album_id, group_id, settings, napcat, backend))
+    key = (group_id, user_id)
+    state.active_downloads[key] = ActiveDownload(job_id=job_id, album_id=album_id)
+    spawn_task(_monitor_job_and_cleanup(job_id, album_id, group_id, key, settings, state, napcat, backend))
+
+
+async def _monitor_job_and_cleanup(
+    job_id: str,
+    album_id: str,
+    group_id: str,
+    active_key: tuple[str, str],
+    settings: BotSettings,
+    state: BotState,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        await monitor_job(job_id, album_id, group_id, settings, napcat, backend)
+    finally:
+        active = state.active_downloads.get(active_key)
+        if active is not None and active.job_id == job_id:
+            state.active_downloads.pop(active_key, None)
 
 
 async def monitor_job(
@@ -383,7 +453,7 @@ async def run_bot() -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
     pending_tasks: set[asyncio.Task[None]] = set()
-    state = BotState(pending_downloads={})
+    state = BotState()
     async with NapCatClient(
         settings.napcat_ws_url,
         settings.napcat_http_url,

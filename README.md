@@ -12,7 +12,7 @@
 - 一条消息只允许一个编号。
 - 先发送封面和标题预览，用户回复确认后才加入下载队列。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
-- JMComic 下载和 PDF 导出在独立子进程执行，超时会终止子进程，避免单个卡死任务堵住队列。
+- JMComic 下载和 PDF 导出在独立子进程执行，总超时或长时间无文件写入都会终止子进程，避免单个卡死任务堵住队列。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
 - 上传失败最多重试 3 次。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
@@ -66,6 +66,8 @@ BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 MAX_CONCURRENT_JOBS=1
 JOB_TIMEOUT_SECONDS=1800
+JOB_STALL_TIMEOUT_SECONDS=300
+JOB_PROGRESS_CHECK_SECONDS=10
 PREVIEW_TIMEOUT_SECONDS=30
 JOB_PROGRESS_NOTIFY_SECONDS=60
 JOB_CONFIRM_TIMEOUT_SECONDS=300
@@ -84,7 +86,9 @@ DATA_DIR=./data
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
-| `JOB_TIMEOUT_SECONDS` | 单个任务超时时间，默认 `1800` |
+| `JOB_TIMEOUT_SECONDS` | 单个任务总超时时间，默认 `1800` 秒 |
+| `JOB_STALL_TIMEOUT_SECONDS` | 下载子进程无文件变化的卡住超时，默认 `300` 秒；设为 `0` 可关闭 |
+| `JOB_PROGRESS_CHECK_SECONDS` | 后端检查下载进度和卡住状态的间隔，默认 `10` 秒 |
 | `PREVIEW_TIMEOUT_SECONDS` | 获取漫画封面和标题的超时时间，默认 `30` 秒 |
 | `JOB_PROGRESS_NOTIFY_SECONDS` | 群内进度通知间隔，默认 `60` 秒 |
 | `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `300` 秒 |
@@ -196,6 +200,12 @@ PDF 生成后会校验：
 
 ```text
 已接收 JM123456，任务编号：xxxx
+```
+
+如果正在下载的任务卡住或不想继续，同一个用户可以在群里回复：
+
+```text
+取消下载
 ```
 
 任务完成后，机器人会上传 PDF 并发送完成消息。
@@ -316,6 +326,7 @@ Invoke-RestMethod `
 | `GET` | `/api/albums/{album_id}/preview` | 获取漫画封面、标题、页数和预计时间 |
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/{job_id}` | 查询任务状态 |
+| `POST` | `/api/jobs/{job_id}/cancel` | 取消排队中或下载中的任务 |
 | `GET` | `/api/jobs/{job_id}/file` | 下载 PDF |
 
 任务状态：

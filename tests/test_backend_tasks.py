@@ -111,6 +111,88 @@ async def test_stuck_download_times_out_and_worker_continues(
     assert next_stored["filename"] == "[JM222222]ok.pdf"
 
 
+@pytest.mark.asyncio
+async def test_stalled_download_without_file_activity_is_killed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=30,
+            job_stall_timeout_seconds=1,
+            progress_interval_seconds=0.1,
+        )
+    )
+
+    def command(_album_id: str, job_dir: Path, _result_path: Path) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib, sys, time; "
+                "images = pathlib.Path(sys.argv[1]) / 'images'; "
+                "images.mkdir(parents=True, exist_ok=True); "
+                "(images / '001.jpg').write_bytes(b'image'); "
+                "time.sleep(30)"
+            ),
+            str(job_dir),
+        ]
+
+    monkeypatch.setattr(manager, "_download_worker_command", command)
+
+    await manager.start()
+    try:
+        job = await manager.create_job("333333", "10001", "20001")
+        await asyncio.wait_for(manager.join(), timeout=5)
+        stored = manager.get_job(job["job_id"])
+    finally:
+        await manager.stop()
+
+    assert stored is not None
+    assert stored["status"] == JobStatus.FAILED.value
+    assert "下载卡住" in stored["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_terminates_active_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=30,
+            job_stall_timeout_seconds=0,
+            progress_interval_seconds=0.1,
+        )
+    )
+
+    def command(_album_id: str, _job_dir: Path, _result_path: Path) -> list[str]:
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    monkeypatch.setattr(manager, "_download_worker_command", command)
+
+    await manager.start()
+    try:
+        job = await manager.create_job("444444", "10001", "20001")
+        await asyncio.sleep(0.2)
+        cancelled = await manager.cancel_job(job["job_id"])
+        await asyncio.wait_for(manager.join(), timeout=5)
+        stored = manager.get_job(job["job_id"])
+    finally:
+        await manager.stop()
+
+    assert cancelled is not None
+    assert stored is not None
+    assert stored["status"] == JobStatus.FAILED.value
+    assert stored["error_message"] == "任务已取消"
+
+
 def test_pdf_not_generated_raises(tmp_path: Path) -> None:
     with pytest.raises(downloader.PdfGenerationError, match="未找到输出文件"):
         downloader._finalize_single_pdf("123456", tmp_path)

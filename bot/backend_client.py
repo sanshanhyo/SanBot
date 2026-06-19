@@ -65,6 +65,14 @@ class BackendClient:
             raise BackendError("后端查询任务失败") from exc
         return response.json()
 
+    async def cancel_job(self, job_id: str) -> dict[str, Any]:
+        try:
+            response = await self._client.post(f"/api/jobs/{job_id}/cancel", headers=self._headers())
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端取消任务失败") from exc
+        return response.json()
+
     async def get_album_preview(self, album_id: str) -> dict[str, Any]:
         try:
             response = await self._client.get(f"/api/albums/{album_id}/preview", headers=self._headers())

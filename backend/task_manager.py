@@ -32,11 +32,20 @@ class DownloadWorkerError(Exception):
 
 
 @dataclass(frozen=True)
+class JobActivitySnapshot:
+    file_count: int
+    total_size: int
+    latest_mtime_ns: int
+
+
+@dataclass(frozen=True)
 class JobManagerConfig:
     data_dir: Path
     option_path: Path
     max_concurrent_jobs: int = 1
     job_timeout_seconds: int = 1800
+    job_stall_timeout_seconds: int = 300
+    progress_interval_seconds: float = 10.0
 
 
 class JobManager:
@@ -49,6 +58,7 @@ class JobManager:
         self.db_path = self.data_dir / "jobs.sqlite3"
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task[None]] = []
+        self._active_processes: dict[str, asyncio.subprocess.Process] = {}
 
     def initialize(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -156,6 +166,24 @@ class JobManager:
             raise RuntimeError("created job disappeared")
         return created
 
+    async def cancel_job(self, job_id: str, reason: str = "任务已取消") -> dict[str, Any] | None:
+        job = self.get_job(job_id)
+        if job is None:
+            return None
+
+        if job["status"] in {JobStatus.COMPLETED.value, JobStatus.FAILED.value}:
+            return job
+
+        self._mark_failed(job_id, reason)
+        process = self._active_processes.get(job_id)
+        if process is not None:
+            await self._terminate_download_process(process)
+
+        cancelled = self.get_job(job_id)
+        if cancelled is None:
+            raise RuntimeError("cancelled job disappeared")
+        return cancelled
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -236,13 +264,20 @@ class JobManager:
                 job_id,
                 album_id,
                 job_dir,
+                self.config.progress_interval_seconds,
             )
+            if self._has_terminal_status(job_id):
+                return
             self._update_status(job_id, JobStatus.CONVERTING, "图片下载完成，正在生成 PDF")
             self._mark_completed(job_id, pdf_path)
         except asyncio.TimeoutError:
+            if self._has_terminal_status(job_id):
+                return
             logger.exception("Job %s timed out.", job_id)
             self._mark_failed(job_id, "下载超时，请稍后重试")
         except DownloadWorkerError as exc:
+            if self._has_terminal_status(job_id):
+                return
             logger.warning("Job %s failed in download worker: %s", job_id, exc.user_message)
             self._mark_failed(job_id, exc.user_message)
         except Exception:
@@ -301,11 +336,23 @@ class JobManager:
 
         command = self._download_worker_command(album_id, job_dir, result_path)
         process = await self._start_download_process(command)
-        deadline = asyncio.get_running_loop().time() + self.config.job_timeout_seconds
+        self._active_processes[job_id] = process
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.job_timeout_seconds
+        last_activity = self._activity_snapshot(job_dir)
+        last_activity_at = loop.time()
 
         try:
+            if self._has_terminal_status(job_id):
+                await self._terminate_download_process(process)
+                raise DownloadWorkerError("任务已取消")
+
             while process.returncode is None:
-                remaining = deadline - asyncio.get_running_loop().time()
+                if self._has_terminal_status(job_id):
+                    await self._terminate_download_process(process)
+                    raise DownloadWorkerError("任务已取消")
+
+                remaining = deadline - loop.time()
                 if remaining <= 0:
                     await self._terminate_download_process(process)
                     raise asyncio.TimeoutError
@@ -316,14 +363,33 @@ class JobManager:
                         timeout=min(progress_interval_seconds, remaining),
                     )
                 except asyncio.TimeoutError:
-                    self._update_download_progress(job_id, job_dir)
+                    now = loop.time()
+                    current_activity = self._activity_snapshot(job_dir)
+                    if current_activity != last_activity:
+                        last_activity = current_activity
+                        last_activity_at = now
+
+                    idle_seconds = max(0.0, now - last_activity_at)
+                    self._update_download_progress(job_id, job_dir, idle_seconds)
+                    if (
+                        self.config.job_stall_timeout_seconds > 0
+                        and idle_seconds >= self.config.job_stall_timeout_seconds
+                    ):
+                        await self._terminate_download_process(process)
+                        raise DownloadWorkerError(
+                            "下载卡住：超过 "
+                            f"{self._format_duration(self.config.job_stall_timeout_seconds)}"
+                            "没有新文件写入，已自动终止"
+                        )
                     continue
 
-            self._update_download_progress(job_id, job_dir)
+            self._update_download_progress(job_id, job_dir, 0.0)
             return self._read_download_result(result_path, process.returncode)
         except asyncio.CancelledError:
             await self._terminate_download_process(process)
             raise
+        finally:
+            self._active_processes.pop(job_id, None)
 
     def _download_worker_command(self, album_id: str, job_dir: Path, result_path: Path) -> list[str]:
         return [
@@ -397,12 +463,14 @@ class JobManager:
             raise DownloadWorkerError("PDF 生成失败：结果路径无效")
         return Path(pdf_path).resolve()
 
-    def _update_download_progress(self, job_id: str, job_dir: Path) -> None:
+    def _update_download_progress(self, job_id: str, job_dir: Path, idle_seconds: float | None = None) -> None:
         downloaded_files = self._count_downloaded_images(job_dir)
         if downloaded_files > 0:
             message = f"下载中，已保存 {downloaded_files} 张图片"
         else:
             message = "下载中，正在获取详情或等待图片写入"
+        if idle_seconds is not None and idle_seconds >= 60:
+            message = f"{message}，已 {int(idle_seconds // 60)} 分钟没有新文件写入"
 
         with self._connect() as conn:
             conn.execute(
@@ -423,6 +491,33 @@ class JobManager:
             for path in images_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in self.IMAGE_SUFFIXES and path.stat().st_size > 0
         )
+
+    def _activity_snapshot(self, job_dir: Path) -> JobActivitySnapshot:
+        if not job_dir.exists():
+            return JobActivitySnapshot(file_count=0, total_size=0, latest_mtime_ns=0)
+
+        file_count = 0
+        total_size = 0
+        latest_mtime_ns = 0
+        for path in job_dir.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            file_count += 1
+            total_size += max(0, stat.st_size)
+            latest_mtime_ns = max(latest_mtime_ns, stat.st_mtime_ns)
+        return JobActivitySnapshot(
+            file_count=file_count,
+            total_size=total_size,
+            latest_mtime_ns=latest_mtime_ns,
+        )
+
+    def _has_terminal_status(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        return job is not None and job["status"] in {JobStatus.COMPLETED.value, JobStatus.FAILED.value}
 
     def _update_status(self, job_id: str, status: JobStatus, progress_message: str | None = None) -> None:
         with self._connect() as conn:
@@ -466,3 +561,12 @@ class JobManager:
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         return dict(row)
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds} 秒"
+        minutes = seconds // 60
+        if seconds % 60 == 0:
+            return f"{minutes} 分钟"
+        return f"{minutes} 分钟 {seconds % 60} 秒"
