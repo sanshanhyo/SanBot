@@ -85,6 +85,7 @@ class PendingDownload:
     album_id: str
     title: str
     estimated_text: str
+    page_count: int | None
     expires_at: float
 
 
@@ -152,9 +153,9 @@ async def handle_group_message(
 
     try:
         active = await backend.get_active_job(group_id, user_id)
-    except BackendError:
+    except BackendError as exc:
         logger.exception("Could not query active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, "后端暂不可用，请稍后再试")
+        await _safe_send(napcat, group_id, f"后端暂不可用，请稍后再试\n报错码：{exc.error_code}")
         return
 
     if active is not None:
@@ -204,6 +205,7 @@ async def _handle_pending_confirmation(
         napcat,
         backend,
         spawn_task,
+        page_count=pending.page_count,
         extra_message=f"预计时间：{pending.estimated_text}",
     )
     return True
@@ -222,9 +224,9 @@ async def _handle_active_cancel(
 
     try:
         cancelled = await backend.cancel_active_job(group_id, user_id)
-    except BackendError:
+    except BackendError as exc:
         logger.exception("Could not cancel active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, "取消失败，请稍后再试")
+        await _safe_send(napcat, group_id, f"取消失败，请稍后再试\n报错码：{exc.error_code}")
         return True
 
     if cancelled is None:
@@ -248,7 +250,7 @@ async def _send_album_preview(
         preview = await backend.get_album_preview(album_id)
     except BackendError as exc:
         logger.exception("Could not fetch album preview.")
-        await _safe_send(napcat, group_id, f"JM{album_id} 获取信息失败：{exc}")
+        await _safe_send(napcat, group_id, f"JM{album_id} 获取信息失败：{exc}\n报错码：{exc.error_code}")
         return
 
     title = str(preview.get("title") or f"JM{album_id}")
@@ -278,6 +280,7 @@ async def _send_album_preview(
         album_id=album_id,
         title=title,
         estimated_text=estimated_text,
+        page_count=page_count if isinstance(page_count, int) and page_count > 0 else None,
         expires_at=asyncio.get_running_loop().time() + settings.confirm_timeout_seconds,
     )
 
@@ -290,17 +293,18 @@ async def _create_job_and_monitor(
     napcat: NapCatClient,
     backend: BackendClient,
     spawn_task: Callable[[Awaitable[None]], None],
+    page_count: int | None = None,
     extra_message: str | None = None,
 ) -> None:
     try:
-        created = await backend.create_job(album_id, group_id, user_id)
+        created = await backend.create_job(album_id, group_id, user_id, page_count=page_count)
     except DuplicateJobError as exc:
         suffix = f"：{exc.job_id}" if exc.job_id else ""
-        await _safe_send(napcat, group_id, f"JM{album_id} 已有进行中的任务{suffix}")
+        await _safe_send(napcat, group_id, f"JM{album_id} 已有进行中的任务{suffix}\n报错码：{exc.error_code}")
         return
-    except BackendError:
+    except BackendError as exc:
         logger.exception("Could not create backend job.")
-        await _safe_send(napcat, group_id, "后端暂不可用，请稍后再试")
+        await _safe_send(napcat, group_id, f"后端暂不可用，请稍后再试\n报错码：{exc.error_code}")
         return
 
     job_id = str(created["job_id"])
@@ -325,7 +329,7 @@ async def monitor_job(
     while True:
         try:
             job = await backend.get_job(job_id)
-        except BackendError:
+        except BackendError as exc:
             logger.exception("Could not query job %s.", job_id)
             await asyncio.sleep(settings.poll_interval_seconds)
             continue
@@ -333,7 +337,8 @@ async def monitor_job(
         status = job.get("status")
         if status == "failed":
             error_message = job.get("error_message") or "任务失败，请稍后重试"
-            await _safe_send(napcat, group_id, f"JM{album_id} 任务失败：{error_message}")
+            error_code = job.get("error_code") or "UNKNOWN"
+            await _safe_send(napcat, group_id, f"JM{album_id} 任务失败：{error_message}\n报错码：{error_code}")
             return
 
         if status == "completed":
@@ -371,9 +376,9 @@ async def _download_and_upload(
 
     try:
         pdf_path = await backend.download_file(job_id, dest_path)
-    except BackendError:
+    except BackendError as exc:
         logger.exception("Could not download PDF for job %s.", job_id)
-        await _safe_send(napcat, group_id, f"JM{album_id} PDF 下载失败，请稍后重试")
+        await _safe_send(napcat, group_id, f"JM{album_id} PDF 下载失败，请稍后重试\n报错码：{exc.error_code}")
         return
 
     for attempt in range(1, 4):
@@ -386,7 +391,7 @@ async def _download_and_upload(
             if attempt < 3:
                 await asyncio.sleep(attempt * 2)
 
-    await _safe_send(napcat, group_id, f"JM{album_id} 已完成，但上传文件失败，请稍后重试")
+    await _safe_send(napcat, group_id, f"JM{album_id} 已完成，但上传文件失败，请稍后重试\n报错码：NAPCAT_UPLOAD_FAILED")
 
 
 async def _safe_send(napcat: NapCatClient, group_id: str, message: str) -> None:

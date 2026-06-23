@@ -13,6 +13,8 @@
 - 先发送封面和标题预览，用户回复确认后才加入下载队列。
 - 同一群内同一用户同时只能有一个排队中、下载中或转换中的任务。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
+- 后端控制台会显示下载进度条；如果预览拿到了页数，会显示百分比和 `已下载/总页数`。
+- 任务失败会保存并返回稳定报错码，Bot 群消息也会显示报错码。
 - JMComic 下载和 PDF 导出在独立子进程执行，总超时或长时间无文件写入都会终止子进程，避免单个卡死任务堵住队列。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
 - 上传失败最多重试 3 次。
@@ -319,7 +321,19 @@ Invoke-RestMethod `
 6. 等待下载和转换完成。
 7. 检查群文件里是否出现 PDF。
 
-如果失败，先看两个终端里的日志。群内只会发送简短错误，完整异常会留在服务日志中。
+如果失败，先看两个终端里的日志。群内只会发送简短错误和报错码，完整异常会留在服务日志中。
+
+常见报错码示例：
+
+| 报错码 | 含义 |
+| --- | --- |
+| `JM_DOWNLOAD_FAILED` | JM 下载失败，通常是网络、Cookie、限流或请求失败 |
+| `JM_NOT_FOUND` | JM 内容不存在或不可访问 |
+| `PDF_GENERATION_FAILED` | 图片转 PDF 失败 |
+| `JOB_TIMEOUT` | 任务超过 `JOB_TIMEOUT_SECONDS` 总超时 |
+| `JOB_STALLED` | 超过 `JOB_STALL_TIMEOUT_SECONDS` 没有新文件写入，任务被自动终止 |
+| `USER_CANCELLED` | 用户主动取消任务 |
+| `NAPCAT_UPLOAD_FAILED` | PDF 已生成，但 NapCat 上传群文件失败 |
 
 ## 后端接口
 
@@ -330,7 +344,7 @@ Invoke-RestMethod `
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/active?group_id=...&user_id=...` | 查询某个群用户当前活跃任务 |
 | `POST` | `/api/jobs/active/cancel?group_id=...&user_id=...` | 取消某个群用户当前活跃任务 |
-| `GET` | `/api/jobs/{job_id}` | 查询任务状态 |
+| `GET` | `/api/jobs/{job_id}` | 查询任务状态，包含 `downloaded_files`、`total_files`、`error_code` |
 | `POST` | `/api/jobs/{job_id}/cancel` | 按任务编号取消排队中或下载中的任务 |
 | `GET` | `/api/jobs/{job_id}/file` | 下载 PDF |
 

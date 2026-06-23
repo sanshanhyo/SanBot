@@ -19,6 +19,21 @@ from .models import JobStatus
 logger = logging.getLogger(__name__)
 
 
+class ErrorCode:
+    USER_CANCELLED = "USER_CANCELLED"
+    JOB_TIMEOUT = "JOB_TIMEOUT"
+    JOB_STALLED = "JOB_STALLED"
+    JM_DOWNLOAD_FAILED = "JM_DOWNLOAD_FAILED"
+    JM_NOT_FOUND = "JM_NOT_FOUND"
+    PDF_GENERATION_FAILED = "PDF_GENERATION_FAILED"
+    PDF_INVALID = "PDF_INVALID"
+    PDF_OUTPUT_PATH_INVALID = "PDF_OUTPUT_PATH_INVALID"
+    WORKER_EXITED = "WORKER_EXITED"
+    WORKER_RESULT_INVALID = "WORKER_RESULT_INVALID"
+    WORKER_UNEXPECTED = "WORKER_UNEXPECTED"
+    JOB_UNEXPECTED = "JOB_UNEXPECTED"
+
+
 class DuplicateJobError(Exception):
     def __init__(self, existing_job: dict[str, Any]) -> None:
         super().__init__("duplicate active job")
@@ -26,9 +41,10 @@ class DuplicateJobError(Exception):
 
 
 class DownloadWorkerError(Exception):
-    def __init__(self, user_message: str) -> None:
+    def __init__(self, user_message: str, error_code: str = ErrorCode.JM_DOWNLOAD_FAILED) -> None:
         super().__init__(user_message)
         self.user_message = user_message
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -75,14 +91,18 @@ class JobManager:
                     filename TEXT,
                     file_path TEXT,
                     error_message TEXT,
+                    error_code TEXT,
                     downloaded_files INTEGER NOT NULL DEFAULT 0,
+                    total_files INTEGER NOT NULL DEFAULT 0,
                     progress_message TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            self._ensure_column(conn, "error_code", "TEXT")
             self._ensure_column(conn, "downloaded_files", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "total_files", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "progress_message", "TEXT")
             conn.execute(
                 """
@@ -125,7 +145,7 @@ class JobManager:
     async def join(self) -> None:
         await self._queue.join()
 
-    async def create_job(self, album_id: str, group_id: str, user_id: str) -> dict[str, Any]:
+    async def create_job(self, album_id: str, group_id: str, user_id: str, page_count: int | None = None) -> dict[str, Any]:
         existing = self.find_active_job_for_user(group_id, user_id)
         if existing is None:
             existing = self.find_active_job(album_id, group_id)
@@ -134,16 +154,17 @@ class JobManager:
 
         now = self._now()
         job_id = str(uuid.uuid4())
+        total_files = max(0, int(page_count or 0))
         try:
             with self._connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO jobs (
                         job_id, album_id, group_id, user_id, status,
-                        filename, file_path, error_message, downloaded_files,
-                        progress_message, created_at, updated_at
+                        filename, file_path, error_message, error_code, downloaded_files,
+                        total_files, progress_message, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -151,6 +172,7 @@ class JobManager:
                         group_id,
                         user_id,
                         JobStatus.QUEUED.value,
+                        total_files,
                         "排队中，等待下载 worker 处理",
                         now,
                         now,
@@ -187,7 +209,7 @@ class JobManager:
         if job["status"] in {JobStatus.COMPLETED.value, JobStatus.FAILED.value}:
             return job
 
-        self._mark_failed(job_id, reason)
+        self._mark_failed(job_id, reason, ErrorCode.USER_CANCELLED)
         process = self._active_processes.get(job_id)
         if process is not None:
             await self._terminate_download_process(process)
@@ -202,8 +224,8 @@ class JobManager:
             row = conn.execute(
                 """
                 SELECT job_id, album_id, group_id, user_id, status,
-                       filename, file_path, error_message, downloaded_files,
-                       progress_message, created_at, updated_at
+                       filename, file_path, error_message, error_code, downloaded_files,
+                       total_files, progress_message, created_at, updated_at
                 FROM jobs
                 WHERE job_id = ?
                 """,
@@ -229,8 +251,8 @@ class JobManager:
             row = conn.execute(
                 """
                 SELECT job_id, album_id, group_id, user_id, status,
-                       filename, file_path, error_message, downloaded_files,
-                       progress_message, created_at, updated_at
+                       filename, file_path, error_message, error_code, downloaded_files,
+                       total_files, progress_message, created_at, updated_at
                 FROM jobs
                 WHERE group_id = ?
                   AND user_id = ?
@@ -253,8 +275,8 @@ class JobManager:
             row = conn.execute(
                 """
                 SELECT job_id, album_id, group_id, user_id, status,
-                       filename, file_path, error_message, downloaded_files,
-                       progress_message, created_at, updated_at
+                       filename, file_path, error_message, error_code, downloaded_files,
+                       total_files, progress_message, created_at, updated_at
                 FROM jobs
                 WHERE album_id = ?
                   AND group_id = ?
@@ -280,7 +302,7 @@ class JobManager:
                 await self._process_job(job_id)
             except Exception:
                 logger.exception("Unexpected worker failure for job %s", job_id)
-                self._mark_failed(job_id, "任务执行失败，请查看服务日志")
+                self._mark_failed(job_id, "任务执行失败，请查看服务日志", ErrorCode.WORKER_UNEXPECTED)
             finally:
                 self._queue.task_done()
 
@@ -311,30 +333,30 @@ class JobManager:
             if self._has_terminal_status(job_id):
                 return
             logger.exception("Job %s timed out.", job_id)
-            self._mark_failed(job_id, "下载超时，请稍后重试")
+            self._mark_failed(job_id, "下载超时，请稍后重试", ErrorCode.JOB_TIMEOUT)
         except DownloadWorkerError as exc:
             if self._has_terminal_status(job_id):
                 return
             logger.warning("Job %s failed in download worker: %s", job_id, exc.user_message)
-            self._mark_failed(job_id, exc.user_message)
+            self._mark_failed(job_id, exc.user_message, exc.error_code)
         except Exception:
             logger.exception("Job %s failed unexpectedly.", job_id)
-            self._mark_failed(job_id, "下载或转换失败，请查看服务日志")
+            self._mark_failed(job_id, "下载或转换失败，请查看服务日志", ErrorCode.JOB_UNEXPECTED)
 
     def _mark_completed(self, job_id: str, pdf_path: Path) -> None:
         pdf_path = pdf_path.resolve()
         if not pdf_path.is_file() or pdf_path.stat().st_size <= 0:
-            self._mark_failed(job_id, "PDF 生成失败：最终文件无效")
+            self._mark_failed(job_id, "PDF 生成失败：最终文件无效", ErrorCode.PDF_INVALID)
             return
         if not pdf_path.is_relative_to(self.jobs_dir.resolve()):
-            self._mark_failed(job_id, "PDF 生成失败：输出路径异常")
+            self._mark_failed(job_id, "PDF 生成失败：输出路径异常", ErrorCode.PDF_OUTPUT_PATH_INVALID)
             return
 
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, filename = ?, file_path = ?, error_message = NULL, updated_at = ?
+                SET status = ?, filename = ?, file_path = ?, error_message = NULL, error_code = NULL, updated_at = ?
                     , progress_message = ?
                 WHERE job_id = ?
                 """,
@@ -347,18 +369,21 @@ class JobManager:
                     job_id,
                 ),
             )
+        self._render_console_progress_from_job(job_id, "completed", final=True)
 
-    def _mark_failed(self, job_id: str, error_message: str) -> None:
+    def _mark_failed(self, job_id: str, error_message: str, error_code: str = ErrorCode.JOB_UNEXPECTED) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, error_message = ?, updated_at = ?
+                SET status = ?, error_message = ?, error_code = ?, updated_at = ?
                     , progress_message = ?
                 WHERE job_id = ?
                 """,
-                (JobStatus.FAILED.value, error_message, self._now(), error_message, job_id),
+                (JobStatus.FAILED.value, error_message, error_code, self._now(), error_message, job_id),
             )
+        self._render_console_progress_from_job(job_id, "failed", final=True, error_code=error_code)
+        logger.warning("Job %s failed with error_code=%s: %s", job_id, error_code, error_message)
 
     async def _run_download_process_with_progress(
         self,
@@ -382,12 +407,12 @@ class JobManager:
         try:
             if self._has_terminal_status(job_id):
                 await self._terminate_download_process(process)
-                raise DownloadWorkerError("任务已取消")
+                raise DownloadWorkerError("任务已取消", ErrorCode.USER_CANCELLED)
 
             while process.returncode is None:
                 if self._has_terminal_status(job_id):
                     await self._terminate_download_process(process)
-                    raise DownloadWorkerError("任务已取消")
+                    raise DownloadWorkerError("任务已取消", ErrorCode.USER_CANCELLED)
 
                 remaining = deadline - loop.time()
                 if remaining <= 0:
@@ -416,7 +441,8 @@ class JobManager:
                         raise DownloadWorkerError(
                             "下载卡住：超过 "
                             f"{self._format_duration(self.config.job_stall_timeout_seconds)}"
-                            "没有新文件写入，已自动终止"
+                            "没有新文件写入，已自动终止",
+                            ErrorCode.JOB_STALLED,
                         )
                     continue
 
@@ -485,20 +511,31 @@ class JobManager:
 
     def _read_download_result(self, result_path: Path, returncode: int | None) -> Path:
         if not result_path.is_file():
-            raise DownloadWorkerError(f"下载进程异常退出，退出码：{returncode}")
+            raise DownloadWorkerError(f"下载进程异常退出，退出码：{returncode}", ErrorCode.WORKER_EXITED)
 
         try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            raise DownloadWorkerError("下载进程结果文件无效") from exc
+            raise DownloadWorkerError("下载进程结果文件无效", ErrorCode.WORKER_RESULT_INVALID) from exc
 
         if not result.get("ok"):
-            raise DownloadWorkerError(result.get("user_message") or "下载失败，请稍后重试")
+            raise DownloadWorkerError(result.get("user_message") or "下载失败，请稍后重试", self._worker_error_code(result))
 
         pdf_path = result.get("pdf_path")
         if not isinstance(pdf_path, str) or not pdf_path:
-            raise DownloadWorkerError("PDF 生成失败：结果路径无效")
+            raise DownloadWorkerError("PDF 生成失败：结果路径无效", ErrorCode.PDF_GENERATION_FAILED)
         return Path(pdf_path).resolve()
+
+    @staticmethod
+    def _worker_error_code(result: dict[str, Any]) -> str:
+        error_type = str(result.get("error_type") or "")
+        if error_type == "AlbumNotFoundError":
+            return ErrorCode.JM_NOT_FOUND
+        if error_type == "PdfGenerationError":
+            return ErrorCode.PDF_GENERATION_FAILED
+        if error_type == "UnexpectedError":
+            return ErrorCode.WORKER_UNEXPECTED
+        return ErrorCode.JM_DOWNLOAD_FAILED
 
     def _update_download_progress(self, job_id: str, job_dir: Path, idle_seconds: float | None = None) -> None:
         downloaded_files = self._count_downloaded_images(job_dir)
@@ -510,6 +547,12 @@ class JobManager:
             message = f"{message}，已 {int(idle_seconds // 60)} 分钟没有新文件写入"
 
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT album_id, total_files FROM jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            album_id = str(row["album_id"]) if row else "?"
+            total_files = int(row["total_files"] or 0) if row else 0
             conn.execute(
                 """
                 UPDATE jobs
@@ -518,6 +561,83 @@ class JobManager:
                 """,
                 (downloaded_files, message, self._now(), job_id, JobStatus.DOWNLOADING.value),
             )
+
+        self._render_console_progress(
+            job_id,
+            album_id,
+            downloaded_files,
+            total_files,
+            "downloading",
+            message,
+            idle_seconds=idle_seconds,
+        )
+
+    def _render_console_progress_from_job(
+        self,
+        job_id: str,
+        status: str,
+        *,
+        final: bool = False,
+        error_code: str | None = None,
+    ) -> None:
+        job = self.get_job(job_id)
+        if job is None:
+            return
+        self._render_console_progress(
+            job_id,
+            str(job.get("album_id") or "?"),
+            int(job.get("downloaded_files") or 0),
+            int(job.get("total_files") or 0),
+            status,
+            str(job.get("progress_message") or ""),
+            final=final,
+            error_code=error_code or job.get("error_code"),
+        )
+
+    @staticmethod
+    def _render_console_progress(
+        job_id: str,
+        album_id: str,
+        downloaded_files: int,
+        total_files: int,
+        status: str,
+        message: str,
+        *,
+        idle_seconds: float | None = None,
+        final: bool = False,
+        error_code: str | None = None,
+    ) -> None:
+        width = 28
+        display_downloaded = downloaded_files
+        if status == "completed" and total_files > 0:
+            display_downloaded = max(downloaded_files, total_files)
+
+        if total_files > 0:
+            ratio = min(max(display_downloaded / total_files, 0.0), 1.0)
+            filled = min(width, int(round(width * ratio)))
+            percent = f"{ratio * 100:5.1f}%"
+            count = f"{display_downloaded}/{total_files}"
+        else:
+            filled = min(width, downloaded_files % (width + 1)) if downloaded_files else 0
+            percent = "  ?.??%"
+            count = f"{downloaded_files}/?"
+
+        bar = "#" * filled + "-" * (width - filled)
+        short_job_id = job_id.split("-", 1)[0]
+        idle_text = ""
+        if idle_seconds is not None and idle_seconds >= 60:
+            idle_text = f" idle={int(idle_seconds)}s"
+        error_text = f" error_code={error_code}" if error_code else ""
+        line = (
+            f"JM{album_id} {short_job_id} {status:<11} "
+            f"[{bar}] {percent} {count} {message}{idle_text}{error_text}"
+        )
+        stream = sys.stderr
+        if stream.isatty() and not final:
+            stream.write("\r" + line + " " * 8)
+        else:
+            stream.write(line + "\n")
+        stream.flush()
 
     def _count_downloaded_images(self, job_dir: Path) -> int:
         images_dir = job_dir / "images"

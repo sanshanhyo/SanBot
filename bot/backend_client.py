@@ -10,12 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 class BackendError(Exception):
-    pass
+    def __init__(self, message: str = "backend error", error_code: str = "BACKEND_ERROR") -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class DuplicateJobError(BackendError):
-    def __init__(self, job_id: str | None, status: str | None) -> None:
-        super().__init__("duplicate job")
+    def __init__(self, job_id: str | None, status: str | None, error_code: str | None = None) -> None:
+        super().__init__("duplicate job", error_code or "DUPLICATE_ACTIVE_JOB")
         self.job_id = job_id
         self.status = status
 
@@ -40,21 +42,29 @@ class BackendClient:
             return {}
         return {"Authorization": f"Bearer {self.api_token}"}
 
-    async def create_job(self, album_id: str, group_id: str, user_id: str) -> dict[str, Any]:
+    async def create_job(
+        self,
+        album_id: str,
+        group_id: str,
+        user_id: str,
+        page_count: int | None = None,
+    ) -> dict[str, Any]:
         payload = {"album_id": album_id, "group_id": group_id, "user_id": user_id}
+        if page_count is not None and page_count > 0:
+            payload["page_count"] = page_count
         try:
             response = await self._client.post("/api/jobs", json=payload, headers=self._headers())
         except httpx.HTTPError as exc:
-            raise BackendError("后端不可用，请稍后再试") from exc
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
 
         if response.status_code == 409:
             detail = self._detail(response)
-            raise DuplicateJobError(detail.get("job_id"), detail.get("status"))
+            raise DuplicateJobError(detail.get("job_id"), detail.get("status"), detail.get("error_code"))
 
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise BackendError("后端创建任务失败") from exc
+            raise BackendError("后端创建任务失败", "BACKEND_CREATE_JOB_FAILED") from exc
         return response.json()
 
     async def get_job(self, job_id: str) -> dict[str, Any]:
@@ -62,7 +72,7 @@ class BackendClient:
             response = await self._client.get(f"/api/jobs/{job_id}", headers=self._headers())
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise BackendError("后端查询任务失败") from exc
+            raise BackendError("后端查询任务失败", "BACKEND_GET_JOB_FAILED") from exc
         return response.json()
 
     async def cancel_job(self, job_id: str) -> dict[str, Any]:
@@ -70,7 +80,7 @@ class BackendClient:
             response = await self._client.post(f"/api/jobs/{job_id}/cancel", headers=self._headers())
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise BackendError("后端取消任务失败") from exc
+            raise BackendError("后端取消任务失败", "BACKEND_CANCEL_JOB_FAILED") from exc
         return response.json()
 
     async def get_active_job(self, group_id: str, user_id: str) -> dict[str, Any] | None:
@@ -84,7 +94,7 @@ class BackendClient:
                 return None
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise BackendError("后端查询当前任务失败") from exc
+            raise BackendError("后端查询当前任务失败", "BACKEND_GET_ACTIVE_JOB_FAILED") from exc
         return response.json()
 
     async def cancel_active_job(self, group_id: str, user_id: str) -> dict[str, Any] | None:
@@ -98,7 +108,7 @@ class BackendClient:
                 return None
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise BackendError("后端取消当前任务失败") from exc
+            raise BackendError("后端取消当前任务失败", "BACKEND_CANCEL_ACTIVE_JOB_FAILED") from exc
         return response.json()
 
     async def get_album_preview(self, album_id: str) -> dict[str, Any]:
@@ -107,9 +117,9 @@ class BackendClient:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             message = self._error_detail_message(exc.response) or "获取漫画信息失败"
-            raise BackendError(message) from exc
+            raise BackendError(message, "BACKEND_PREVIEW_FAILED") from exc
         except httpx.HTTPError as exc:
-            raise BackendError("后端不可用，请稍后再试") from exc
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
     async def download_file(self, job_id: str, dest_path: str | Path) -> Path:
@@ -129,11 +139,11 @@ class BackendClient:
                         file.write(chunk)
         except httpx.HTTPError as exc:
             tmp_path.unlink(missing_ok=True)
-            raise BackendError("PDF 下载失败") from exc
+            raise BackendError("PDF 下载失败", "BACKEND_PDF_DOWNLOAD_FAILED") from exc
 
         if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
             tmp_path.unlink(missing_ok=True)
-            raise BackendError("PDF 下载失败：文件为空")
+            raise BackendError("PDF 下载失败：文件为空", "BACKEND_PDF_EMPTY")
 
         tmp_path.replace(dest)
         return dest

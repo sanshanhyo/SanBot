@@ -17,6 +17,7 @@ class JobCreate(BaseModel):
     album_id: str = Field(pattern=r"^\d{1,12}$")
     group_id: str = Field(pattern=r"^\d+$")
     user_id: str = Field(pattern=r"^\d+$")
+    page_count: int | None = Field(default=None, ge=1)
 
 
 class JobCreateResponse(BaseModel):
@@ -32,7 +33,9 @@ class JobResponse(BaseModel):
     status: JobStatus
     filename: str | None = None
     error_message: str | None = None
+    error_code: str | None = None
     downloaded_files: int = 0
+    total_files: int = 0
     progress_message: str | None = None
 
 

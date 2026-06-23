@@ -140,13 +140,14 @@ async def create_job(
 ) -> JobCreateResponse:
     _require_api_token(request, authorization)
     try:
-        job = await _manager(request).create_job(payload.album_id, payload.group_id, payload.user_id)
+        job = await _manager(request).create_job(payload.album_id, payload.group_id, payload.user_id, payload.page_count)
     except DuplicateJobError as exc:
         existing = exc.existing_job
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "message": "你已有进行中的任务，或该 JM 编号已在本群下载中",
+                "error_code": "DUPLICATE_ACTIVE_JOB",
                 "job_id": existing["job_id"],
                 "status": existing["status"],
             },

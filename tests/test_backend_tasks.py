@@ -52,6 +52,7 @@ async def test_download_failure_marks_job_failed(
     assert stored is not None
     assert stored["status"] == JobStatus.FAILED.value
     assert stored["error_message"] == "下载失败，请稍后重试"
+    assert stored["error_code"] == "JM_DOWNLOAD_FAILED"
 
 
 @pytest.mark.asyncio
@@ -105,6 +106,7 @@ async def test_stuck_download_times_out_and_worker_continues(
     assert stuck_stored is not None
     assert stuck_stored["status"] == JobStatus.FAILED.value
     assert stuck_stored["error_message"] == "下载超时，请稍后重试"
+    assert stuck_stored["error_code"] == "JOB_TIMEOUT"
 
     assert next_stored is not None
     assert next_stored["status"] == JobStatus.COMPLETED.value
@@ -154,6 +156,7 @@ async def test_stalled_download_without_file_activity_is_killed(
     assert stored is not None
     assert stored["status"] == JobStatus.FAILED.value
     assert "下载卡住" in stored["error_message"]
+    assert stored["error_code"] == "JOB_STALLED"
 
 
 @pytest.mark.asyncio
@@ -191,6 +194,8 @@ async def test_cancel_job_terminates_active_process(
     assert stored is not None
     assert stored["status"] == JobStatus.FAILED.value
     assert stored["error_message"] == "任务已取消"
+    assert stored["error_code"] == "USER_CANCELLED"
+
 
 
 @pytest.mark.asyncio
@@ -236,12 +241,51 @@ async def test_cancel_active_job_for_user_marks_failed(tmp_path: Path) -> None:
     assert stored is not None
     assert stored["status"] == JobStatus.FAILED.value
     assert stored["error_message"] == "任务已取消"
+    assert stored["error_code"] == "USER_CANCELLED"
+
     assert manager.find_active_job_for_user("10001", "20001") is None
 
 
 def test_pdf_not_generated_raises(tmp_path: Path) -> None:
     with pytest.raises(downloader.PdfGenerationError, match="未找到输出文件"):
         downloader._finalize_single_pdf("123456", tmp_path)
+
+
+def test_console_progress_bar_with_total(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=5,
+        )
+    )
+    manager.initialize()
+    job_id = "job-progress-bar"
+    now = manager._now()
+    with manager._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                job_id, album_id, group_id, user_id, status,
+                total_files, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, "123456", "10001", "20001", JobStatus.DOWNLOADING.value, 4, now, now),
+        )
+
+    images_dir = tmp_path / "data" / "jobs" / job_id / "images"
+    images_dir.mkdir(parents=True)
+    (images_dir / "001.jpg").write_bytes(b"image")
+    (images_dir / "002.jpg").write_bytes(b"image")
+
+    manager._update_download_progress(job_id, tmp_path / "data" / "jobs" / job_id)
+
+    output = capsys.readouterr().err
+    assert "JM123456" in output
+    assert "50.0%" in output
+    assert "2/4" in output
 
 
 def test_update_download_progress_counts_images(tmp_path: Path) -> None:

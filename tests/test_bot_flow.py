@@ -6,7 +6,7 @@ from typing import Awaitable
 
 import pytest
 
-from bot.main import BotSettings, BotState, _download_and_upload, handle_group_message
+from bot.main import BotSettings, BotState, _download_and_upload, handle_group_message, monitor_job
 from bot.napcat_client import NapCatAPIError
 
 
@@ -35,7 +35,7 @@ class FakeNapCat:
 
 class FakeCreateBackend:
     def __init__(self) -> None:
-        self.created: list[tuple[str, str, str]] = []
+        self.created: list[tuple[str, str, str, int | None]] = []
         self.previewed: list[str] = []
         self.cancelled: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -61,8 +61,14 @@ class FakeCreateBackend:
             "estimated_text": "预计约 5-8 分钟",
         }
 
-    async def create_job(self, album_id: str, group_id: str, user_id: str) -> dict:
-        self.created.append((album_id, group_id, user_id))
+    async def create_job(
+        self,
+        album_id: str,
+        group_id: str,
+        user_id: str,
+        page_count: int | None = None,
+    ) -> dict:
+        self.created.append((album_id, group_id, user_id, page_count))
         return {"job_id": "job-123", "status": "queued"}
 
     async def cancel_job(self, job_id: str) -> dict:
@@ -76,6 +82,16 @@ class FakeDownloadBackend:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"%PDF-1.4\n")
         return path
+
+
+class FakeFailedJobBackend:
+    async def get_job(self, _job_id: str) -> dict:
+        return {
+            "job_id": "job-123",
+            "status": "failed",
+            "error_message": "下载失败，请稍后重试",
+            "error_code": "JM_DOWNLOAD_FAILED",
+        }
 
 
 class TaskCollector:
@@ -188,7 +204,7 @@ async def test_confirm_download_creates_job(tmp_path: Path) -> None:
         tasks,
     )
 
-    assert backend.created == [("123456", "10001", "20001")]
+    assert backend.created == [("123456", "10001", "20001", 120)]
     assert napcat.sent[-1] == ("10001", "已接收 JM123456，任务编号：job-123\n预计时间：预计约 5-8 分钟")
     assert tasks.count == 1
     assert state.pending_downloads == {}
@@ -240,6 +256,25 @@ async def test_active_download_can_be_cancelled(tmp_path: Path) -> None:
 
     assert backend.cancelled_active == [("10001", "20001")]
     assert napcat.sent[-1] == ("10001", "已取消 JM123456 任务。")
+
+
+@pytest.mark.asyncio
+async def test_failed_job_message_includes_error_code(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+
+    await monitor_job(
+        "job-123",
+        "123456",
+        "10001",
+        _settings(tmp_path),
+        napcat,  # type: ignore[arg-type]
+        FakeFailedJobBackend(),  # type: ignore[arg-type]
+    )
+
+    assert napcat.sent[-1] == (
+        "10001",
+        "JM123456 任务失败：下载失败，请稍后重试\n报错码：JM_DOWNLOAD_FAILED",
+    )
 
 
 @pytest.mark.asyncio
