@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import traceback
 from pathlib import Path
 
 from . import downloader
+
+
+def _configure_logging(job_dir: Path) -> None:
+    job_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=job_dir / "worker-output.log",
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def _write_result(result_path: Path, payload: dict) -> None:
@@ -27,6 +37,7 @@ def main() -> int:
     job_dir = Path(args.job_dir).resolve()
     result_path = Path(args.result_path).resolve()
     error_log_path = job_dir / "worker-error.log"
+    _configure_logging(job_dir)
 
     try:
         pdf_path = downloader.download_album_pdf(
@@ -70,9 +81,9 @@ def main() -> int:
             "pdf_path": str(pdf_path),
         },
     )
+    logging.getLogger(__name__).info("Download worker completed: %s", pdf_path)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

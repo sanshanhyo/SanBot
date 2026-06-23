@@ -251,6 +251,33 @@ def test_pdf_not_generated_raises(tmp_path: Path) -> None:
         downloader._finalize_single_pdf("123456", tmp_path)
 
 
+def test_fallback_pdf_generated_from_downloaded_images(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeImg2Pdf:
+        converted_paths: list[str] = []
+
+        @classmethod
+        def convert(cls, image_paths: list[str]) -> bytes:
+            cls.converted_paths = image_paths
+            return b"%PDF-1.4\n"
+
+    images_dir = tmp_path / "images" / "chapter"
+    output_dir = tmp_path / "pdf"
+    images_dir.mkdir(parents=True)
+    (images_dir / "10.jpg").write_bytes(b"image")
+    (images_dir / "2.jpg").write_bytes(b"image")
+
+    monkeypatch.setattr(downloader, "_load_img2pdf_module", lambda: FakeImg2Pdf)
+
+    pdf_path = downloader._finalize_or_convert_pdf("123456", output_dir, tmp_path / "images")
+
+    assert pdf_path.name == "[JM123456].pdf"
+    assert pdf_path.read_bytes() == b"%PDF-1.4\n"
+    assert [Path(path).name for path in FakeImg2Pdf.converted_paths] == ["2.jpg", "10.jpg"]
+
+
 def test_console_progress_bar_with_total(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     manager = JobManager(
         JobManagerConfig(

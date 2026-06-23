@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 ALBUM_ID_RE = re.compile(r"^\d{1,12}$")
 ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 COOKIE_LOG_RE = re.compile(
     r"(?i)(Cookie['\"]?\s*:\s*['\"]?)([^'\"\]}]+)|"
     r"(cookies['\"]?\s*:\s*['\"]?)([^'\"\]}]+)|"
@@ -88,6 +91,92 @@ def _ensure_child_path(child: Path, parent: Path) -> Path:
     return resolved_child
 
 
+def _natural_sort_key(path: Path) -> list[int | str]:
+    parts: list[int | str] = []
+    for piece in re.split(r"(\d+)", path.as_posix().lower()):
+        if not piece:
+            continue
+        parts.append(int(piece) if piece.isdigit() else piece)
+    return parts
+
+
+def _collect_image_paths(images_dir: Path) -> list[Path]:
+    if not images_dir.exists():
+        return []
+    paths = [
+        path.resolve()
+        for path in images_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES and path.stat().st_size > 0
+    ]
+    return sorted(paths, key=_natural_sort_key)
+
+
+def _load_img2pdf_module() -> Any:
+    try:
+        import img2pdf
+    except ImportError as exc:
+        raise PdfGenerationError("PDF 生成失败：后端缺少 img2pdf 依赖，请联系管理员安装") from exc
+    return img2pdf
+
+
+def _write_images_to_pdf(album_id: str, images_dir: Path, output_dir: Path) -> Path:
+    image_paths = _collect_image_paths(images_dir)
+    if not image_paths:
+        raise PdfGenerationError("PDF 生成失败：未找到可转换图片")
+
+    img2pdf = _load_img2pdf_module()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fallback_path = output_dir / f"[JM{album_id}].pdf"
+    try:
+        fallback_path.write_bytes(img2pdf.convert([str(path) for path in image_paths]))
+    except Exception as exc:
+        raise PdfGenerationError("PDF 生成失败：图片转换失败") from exc
+
+    if not fallback_path.is_file() or fallback_path.stat().st_size <= 0:
+        raise PdfGenerationError("PDF 生成失败：最终文件无效")
+    return fallback_path
+
+
+def _can_fallback_to_image_conversion(exc: PdfGenerationError) -> bool:
+    message = str(exc)
+    return "未找到输出文件" in message or "输出文件为空" in message
+
+
+def _remove_existing_pdfs(output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    for pdf_path in output_dir.rglob("*.pdf"):
+        safe_pdf_path = _ensure_child_path(pdf_path, output_dir)
+        safe_pdf_path.unlink(missing_ok=True)
+
+
+def _finalize_or_convert_pdf(album_id: str, output_dir: Path, images_dir: Path) -> Path:
+    try:
+        return _finalize_single_pdf(album_id, output_dir)
+    except PdfGenerationError as exc:
+        if not _can_fallback_to_image_conversion(exc):
+            raise
+        if not _collect_image_paths(images_dir):
+            raise
+
+        logger.warning(
+            "JMComic export_pdf did not produce a usable PDF for JM%s; converting downloaded images directly.",
+            album_id,
+        )
+        _remove_existing_pdfs(output_dir)
+        _write_images_to_pdf(album_id, images_dir, output_dir)
+        return _finalize_single_pdf(album_id, output_dir)
+
+
+def _cleanup_downloaded_images(images_dir: Path, job_path: Path) -> None:
+    if not images_dir.exists():
+        return
+    safe_images_dir = _ensure_child_path(images_dir, job_path)
+    if safe_images_dir == job_path.resolve():
+        return
+    shutil.rmtree(safe_images_dir, ignore_errors=True)
+
+
 def _finalize_single_pdf(album_id: str, output_dir: Path) -> Path:
     output_dir = output_dir.resolve()
     pdfs = [path for path in output_dir.rglob("*.pdf") if path.is_file()]
@@ -154,6 +243,7 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
         raise DownloadError("未安装 jmcomic，请先安装项目依赖") from exc
 
     try:
+        _load_img2pdf_module()
         option = create_option_by_file(str(option_file))
         _set_job_download_dir(option, images_dir)
         stdout = StringIO()
@@ -165,7 +255,7 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
                 extra=Feature.export_pdf(
                     pdf_dir=str(output_dir),
                     filename_rule="Aid_Atitle",
-                    delete_original_file=True,
+                    delete_original_file=False,
                 ),
             )
         _log_captured_jmcomic_output(stdout, stderr)
@@ -178,7 +268,9 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
             raise AlbumNotFoundError("JM 内容不存在或不可访问") from exc
         raise DownloadError(_download_error_message(exc)) from exc
 
-    return _finalize_single_pdf(album_id, output_dir)
+    final_path = _finalize_or_convert_pdf(album_id, output_dir, images_dir)
+    _cleanup_downloaded_images(images_dir, job_path)
+    return final_path
 
 
 def estimate_download_seconds(page_count: int | None) -> int | None:

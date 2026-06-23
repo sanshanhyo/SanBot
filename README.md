@@ -36,6 +36,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
+后续从 GitHub 拉取更新后，也建议重新执行一次安装命令，确保新增依赖例如 `img2pdf` 已安装。
+
 如果 PyPI 访问较慢，可以使用镜像：
 
 ```powershell
@@ -334,6 +336,8 @@ Invoke-RestMethod `
 | `JOB_STALLED` | 超过 `JOB_STALL_TIMEOUT_SECONDS` 没有新文件写入，任务被自动终止 |
 | `USER_CANCELLED` | 用户主动取消任务 |
 | `NAPCAT_UPLOAD_FAILED` | PDF 已生成，但 NapCat 上传群文件失败 |
+
+`PDF_GENERATION_FAILED` 优先检查后端虚拟环境是否安装了 `img2pdf`，并查看对应任务目录下的 `worker-output.log` 和 `worker-error.log`。
 
 ## 后端接口
 
