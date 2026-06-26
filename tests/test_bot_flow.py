@@ -6,6 +6,7 @@ from typing import Awaitable
 
 import pytest
 
+import bot.main as bot_main
 from bot.main import BotSettings, BotState, _download_and_upload, handle_group_message, monitor_job
 from bot.napcat_client import NapCatAPIError
 
@@ -125,6 +126,33 @@ def _group_event(message: list[dict]) -> dict:
         "user_id": "20001",
         "message": message,
     }
+
+
+def test_split_pdf_for_upload_creates_valid_parts(tmp_path: Path) -> None:
+    import img2pdf
+    import pikepdf
+    from PIL import Image
+
+    image_paths: list[Path] = []
+    for index in range(3):
+        image_path = tmp_path / f"{index}.jpg"
+        Image.new("RGB", (32, 32), "white").save(image_path)
+        image_paths.append(image_path)
+
+    pdf_path = tmp_path / "album.pdf"
+    pdf_path.write_bytes(img2pdf.convert([str(path) for path in image_paths]))
+
+    parts = bot_main._split_pdf_for_upload(pdf_path, "album.pdf", max_upload_bytes=100)
+
+    assert len(parts) == 3
+    assert [name for _path, name in parts] == [
+        "album.part01-of03.pdf",
+        "album.part02-of03.pdf",
+        "album.part03-of03.pdf",
+    ]
+    for part_path, _part_name in parts:
+        with pikepdf.Pdf.open(part_path) as part_pdf:
+            assert len(part_pdf.pages) == 1
 
 
 @pytest.mark.asyncio
@@ -347,6 +375,33 @@ async def test_upload_success(tmp_path: Path) -> None:
     assert napcat.uploads[0][0] == "10001"
     assert napcat.uploads[0][2] == "[JM123456]title.pdf"
     assert napcat.sent[-1] == ("10001", "JM123456 已完成，PDF 已上传：[JM123456]title.pdf")
+
+
+@pytest.mark.asyncio
+async def test_large_upload_uses_split_parts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_prepare_upload_files(pdf_path: Path, _filename: str, _max_upload_bytes: int) -> list[tuple[Path, str]]:
+        part1 = pdf_path.parent / "part1.pdf"
+        part2 = pdf_path.parent / "part2.pdf"
+        part1.write_bytes(b"%PDF-1.4\npart1")
+        part2.write_bytes(b"%PDF-1.4\npart2")
+        return [(part1, "part1.pdf"), (part2, "part2.pdf")]
+
+    monkeypatch.setattr(bot_main, "_prepare_upload_files", fake_prepare_upload_files)
+    napcat = FakeNapCat()
+    backend = FakeDownloadBackend()
+
+    await _download_and_upload(
+        {"job_id": "job-123", "filename": "[JM123456]title.pdf"},
+        "123456",
+        "10001",
+        _settings(tmp_path),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+    )
+
+    assert [upload[2] for upload in napcat.uploads] == ["part1.pdf", "part2.pdf"]
+    assert "已拆分为 2 个文件上传" in napcat.sent[-2][1]
+    assert napcat.sent[-1] == ("10001", "JM123456 已完成，PDF 分卷已全部上传。")
 
 
 @pytest.mark.asyncio

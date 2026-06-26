@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -25,6 +27,11 @@ ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes", "ok"}
 CANCEL_WORDS = {"取消", "取消下载", "取消任务", "不要", "否", "不下", "n", "no"}
 ACTIVE_CANCEL_WORDS = CANCEL_WORDS | {"取消下载", "取消任务", "停止下载", "停止任务"}
+DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
+
+class UploadPreparationError(Exception):
+    pass
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -66,6 +73,7 @@ class BotSettings:
     large_album_warning_pages: int = 100
     napcat_http_timeout_seconds: int = 60
     napcat_upload_timeout_seconds: int = 900
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -88,6 +96,7 @@ class BotSettings:
             large_album_warning_pages=max(0, _env_int("LARGE_ALBUM_WARNING_PAGES", 100)),
             napcat_http_timeout_seconds=max(1, _env_int("NAPCAT_HTTP_TIMEOUT_SECONDS", 60)),
             napcat_upload_timeout_seconds=max(60, _env_int("NAPCAT_UPLOAD_TIMEOUT_SECONDS", 900)),
+            max_upload_bytes=max(0, _env_int("NAPCAT_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)),
         )
 
 
@@ -463,17 +472,132 @@ async def _download_and_upload(
         await _safe_send(napcat, group_id, f"JM{album_id} PDF 下载失败，请稍后重试\n报错码：{exc.error_code}")
         return
 
+    try:
+        upload_files = await asyncio.to_thread(_prepare_upload_files, pdf_path, filename, settings.max_upload_bytes)
+    except UploadPreparationError as exc:
+        logger.exception("Could not prepare upload files for job %s.", job_id)
+        await _safe_send(napcat, group_id, f"JM{album_id} PDF 上传准备失败：{exc}\n报错码：PDF_UPLOAD_PREPARE_FAILED")
+        return
+
+    if len(upload_files) > 1:
+        await _safe_send(
+            napcat,
+            group_id,
+            (
+                f"JM{album_id} PDF 较大（{_format_bytes(pdf_path.stat().st_size)}），"
+                f"已拆分为 {len(upload_files)} 个文件上传。"
+            ),
+        )
+
+    for index, (upload_path, upload_name) in enumerate(upload_files, start=1):
+        if not await _upload_with_retries(napcat, group_id, upload_path, upload_name, job_id):
+            await _safe_send(
+                napcat,
+                group_id,
+                (
+                    f"JM{album_id} 已完成，但第 {index}/{len(upload_files)} 个文件上传失败，请稍后重试\n"
+                    "报错码：NAPCAT_UPLOAD_FAILED"
+                ),
+            )
+            return
+
+    if len(upload_files) == 1:
+        await _safe_send(napcat, group_id, f"JM{album_id} 已完成，PDF 已上传：{filename}")
+    else:
+        await _safe_send(napcat, group_id, f"JM{album_id} 已完成，PDF 分卷已全部上传。")
+
+
+async def _upload_with_retries(
+    napcat: NapCatClient,
+    group_id: str,
+    file_path: Path,
+    filename: str,
+    job_id: str,
+) -> bool:
     for attempt in range(1, 4):
         try:
-            await napcat.upload_group_file(group_id, pdf_path, filename)
-            await _safe_send(napcat, group_id, f"JM{album_id} 已完成，PDF 已上传：{filename}")
-            return
-        except NapCatAPIError:
-            logger.exception("Upload attempt %s failed for job %s.", attempt, job_id)
+            await napcat.upload_group_file(group_id, file_path, filename)
+            return True
+        except NapCatAPIError as exc:
             if attempt < 3:
+                logger.warning("Upload attempt %s failed for job %s: %s", attempt, job_id, exc)
                 await asyncio.sleep(attempt * 2)
+            else:
+                logger.exception("Upload attempt %s failed for job %s.", attempt, job_id)
+    return False
 
-    await _safe_send(napcat, group_id, f"JM{album_id} 已完成，但上传文件失败，请稍后重试\n报错码：NAPCAT_UPLOAD_FAILED")
+
+def _prepare_upload_files(pdf_path: Path, filename: str, max_upload_bytes: int) -> list[tuple[Path, str]]:
+    pdf_path = pdf_path.resolve()
+    if max_upload_bytes <= 0 or pdf_path.stat().st_size <= max_upload_bytes:
+        return [(pdf_path, filename)]
+    return _split_pdf_for_upload(pdf_path, filename, max_upload_bytes)
+
+
+def _split_pdf_for_upload(pdf_path: Path, filename: str, max_upload_bytes: int) -> list[tuple[Path, str]]:
+    try:
+        import pikepdf
+    except ImportError as exc:
+        raise UploadPreparationError("缺少 pikepdf 依赖，无法拆分大 PDF") from exc
+
+    split_dir = pdf_path.parent / f"{pdf_path.stem}_parts"
+    parent = pdf_path.parent.resolve()
+    split_dir = split_dir.resolve()
+    if not split_dir.is_relative_to(parent):
+        raise UploadPreparationError("PDF 拆分目录异常")
+    if split_dir.exists():
+        shutil.rmtree(split_dir)
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with pikepdf.Pdf.open(pdf_path) as source_pdf:
+            page_count = len(source_pdf.pages)
+            if page_count <= 1:
+                return [(pdf_path, filename)]
+
+            target_bytes = max(1, int(max_upload_bytes * 0.85))
+            part_count = max(2, math.ceil(pdf_path.stat().st_size / target_bytes))
+            pages_per_part = max(1, math.ceil(page_count / part_count))
+            parts: list[tuple[Path, str]] = []
+
+            start = 0
+            index = 1
+            while start < page_count:
+                end = min(page_count, start + pages_per_part)
+                part_pdf = pikepdf.Pdf.new()
+                for page_index in range(start, end):
+                    part_pdf.pages.append(source_pdf.pages[page_index])
+
+                part_name = _part_filename(filename, index, math.ceil(page_count / pages_per_part))
+                part_path = split_dir / part_name
+                part_pdf.save(part_path)
+                part_pdf.close()
+                if not part_path.is_file() or part_path.stat().st_size <= 0:
+                    raise UploadPreparationError("PDF 分卷文件无效")
+                parts.append((part_path, part_name))
+                start = end
+                index += 1
+    except UploadPreparationError:
+        raise
+    except Exception as exc:
+        raise UploadPreparationError("PDF 拆分失败") from exc
+
+    return parts or [(pdf_path, filename)]
+
+
+def _part_filename(filename: str, index: int, total: int) -> str:
+    safe = _safe_filename(filename, "upload.pdf")
+    stem = Path(safe).stem.strip(" .")
+    if len(stem) > 120:
+        stem = stem[:120].strip(" .")
+    stem = stem or "upload"
+    return f"{stem}.part{index:02d}-of{total:02d}.pdf"
+
+
+def _format_bytes(size: int) -> str:
+    if size < 1024 * 1024:
+        return f"{max(1, round(size / 1024))}KB"
+    return f"{size / 1024 / 1024:.1f}MB"
 
 
 async def _safe_send(napcat: NapCatClient, group_id: str, message: str) -> None:

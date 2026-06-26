@@ -19,6 +19,7 @@
 - JMComic 下载和 PDF 导出在独立子进程执行，总超时或长时间无文件写入都会终止子进程，避免单个卡死任务堵住队列。
 - PDF 文件会命名为 `[JM编号]漫画标题.pdf`，并自动清理 Windows 不允许的字符。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
+- PDF 过大时会自动拆分为多个分卷 PDF 上传，避免 NapCat/QQ 大文件上传失败。
 - 上传失败最多重试 3 次。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
 
@@ -71,6 +72,7 @@ NAPCAT_HTTP_URL=http://127.0.0.1:3000
 NAPCAT_ACCESS_TOKEN=
 NAPCAT_HTTP_TIMEOUT_SECONDS=60
 NAPCAT_UPLOAD_TIMEOUT_SECONDS=900
+NAPCAT_MAX_UPLOAD_BYTES=104857600
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 MAX_CONCURRENT_JOBS=1
@@ -97,6 +99,7 @@ DATA_DIR=./data
 | `NAPCAT_ACCESS_TOKEN` | NapCatQQ access token，没有则留空 |
 | `NAPCAT_HTTP_TIMEOUT_SECONDS` | NapCatQQ 普通 HTTP API 超时，默认 `60` 秒 |
 | `NAPCAT_UPLOAD_TIMEOUT_SECONDS` | NapCatQQ 上传群文件超时，默认 `900` 秒；大 PDF 建议保持较大 |
+| `NAPCAT_MAX_UPLOAD_BYTES` | 单个上传文件大小上限，超过会自动拆分 PDF；默认 `104857600`，即 100MB |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
@@ -132,7 +135,7 @@ DATA_DIR=./data
 }
 ```
 
-Bot 会检查 NapCatQQ 响应中的 `status` 和 `retcode`，不会只看 HTTP 状态码。
+Bot 会检查 NapCatQQ 响应中的 `status` 和 `retcode`，不会只看 HTTP 状态码。大 PDF 如果触发 `rich media transfer failed`，通常是 NapCat/QQ 上传阶段拒绝了大文件；本项目会按 `NAPCAT_MAX_UPLOAD_BYTES` 自动拆成多个 PDF 分卷再上传。
 
 ## JMComic 配置
 
