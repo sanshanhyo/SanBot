@@ -16,6 +16,7 @@
 - 后端控制台会显示下载进度条；如果预览拿到了页数，会显示百分比和 `已下载/总页数`。
 - 任务失败会保存并返回稳定报错码，Bot 群消息也会显示报错码。
 - JMComic 下载和 PDF 导出在独立子进程执行，总超时或长时间无文件写入都会终止子进程，避免单个卡死任务堵住队列。
+- PDF 文件会命名为 `[JM编号]漫画标题.pdf`，并自动清理 Windows 不允许的字符。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
 - 上传失败最多重试 3 次。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
@@ -76,6 +77,8 @@ JOB_PROGRESS_CHECK_SECONDS=10
 PREVIEW_TIMEOUT_SECONDS=30
 JOB_PROGRESS_NOTIFY_SECONDS=60
 JOB_CONFIRM_TIMEOUT_SECONDS=300
+JM_DOWNLOAD_IMAGE_THREADS=40
+JM_DOWNLOAD_PHOTO_THREADS=8
 JMCOMIC_OPTION_PATH=./config/jmcomic-option.yml
 DATA_DIR=./data
 ```
@@ -97,6 +100,8 @@ DATA_DIR=./data
 | `PREVIEW_TIMEOUT_SECONDS` | 获取漫画封面和标题的超时时间，默认 `30` 秒 |
 | `JOB_PROGRESS_NOTIFY_SECONDS` | 群内进度通知间隔，默认 `60` 秒 |
 | `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `300` 秒 |
+| `JM_DOWNLOAD_IMAGE_THREADS` | JMComic 图片下载线程数，留空则使用 `config/jmcomic-option.yml` |
+| `JM_DOWNLOAD_PHOTO_THREADS` | JMComic 章节下载线程数，留空则使用 `config/jmcomic-option.yml` |
 | `JMCOMIC_OPTION_PATH` | JMComic 配置文件路径 |
 | `DATA_DIR` | 数据目录 |
 
@@ -153,7 +158,7 @@ download:
     photo: 4
 ```
 
-`download.threading.image` 和 `download.threading.photo` 可以影响下载并发。数值越大不一定越快，过高可能触发限流；建议先用上面的中等配置，稳定后再微调。后端只在 `backend/downloader.py` 中调用 `jmcomic`。
+`download.threading.image` 和 `download.threading.photo` 可以影响下载并发。也可以在 `.env` 里用 `JM_DOWNLOAD_IMAGE_THREADS` 和 `JM_DOWNLOAD_PHOTO_THREADS` 覆盖它们，服务器建议先从 `40` 和 `8` 开始试。数值越大不一定越快，过高可能触发限流；如果出现 403、频繁超时或下载卡住，就把这两个值降下来。后端只在 `backend/downloader.py` 中调用 `jmcomic`。
 
 每个任务会使用独立目录：
 
@@ -166,7 +171,7 @@ PDF 生成后会校验：
 - PDF 文件存在
 - 文件大小大于 0
 - 最终只能有一个 PDF
-- 文件名包含 JM 编号
+- 文件名包含 JM 编号和漫画标题
 - 文件名会清理 Windows 非法字符
 
 ## 启动

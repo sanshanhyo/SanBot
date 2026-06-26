@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 from contextlib import redirect_stderr, redirect_stdout
@@ -54,6 +55,31 @@ def sanitize_filename(name: str, fallback: str = "output.pdf", max_length: int =
         suffix = Path(cleaned).suffix or ".pdf"
         cleaned = f"{stem}{suffix}"
     return cleaned
+
+
+def sanitize_title(title: str | None, fallback: str = "album", max_length: int = 120) -> str:
+    cleaned = ILLEGAL_FILENAME_CHARS_RE.sub("_", title or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if cleaned.lower().endswith(".pdf"):
+        cleaned = cleaned[:-4].strip(" .")
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].strip(" .")
+    return cleaned or fallback
+
+
+def _album_title_from_detail(album_id: str, album: object | None) -> str:
+    if album is None:
+        return f"JM{album_id}"
+    title = getattr(album, "title", None) or getattr(album, "name", None)
+    return str(title or f"JM{album_id}")
+
+
+def _pdf_filename(album_id: str, title: str | None = None) -> str:
+    prefix = f"[JM{album_id}]"
+    if title is None or not sanitize_title(title, fallback=""):
+        return sanitize_filename(f"{prefix}.pdf", fallback=f"{prefix}.pdf")
+    safe_title = sanitize_title(title, fallback="album")
+    return sanitize_filename(f"{prefix}{safe_title}.pdf", fallback=f"{prefix}.pdf")
 
 
 def _looks_like_missing_album(exc: Exception) -> bool:
@@ -119,14 +145,14 @@ def _load_img2pdf_module() -> Any:
     return img2pdf
 
 
-def _write_images_to_pdf(album_id: str, images_dir: Path, output_dir: Path) -> Path:
+def _write_images_to_pdf(album_id: str, images_dir: Path, output_dir: Path, title: str | None = None) -> Path:
     image_paths = _collect_image_paths(images_dir)
     if not image_paths:
         raise PdfGenerationError("PDF 生成失败：未找到可转换图片")
 
     img2pdf = _load_img2pdf_module()
     output_dir.mkdir(parents=True, exist_ok=True)
-    fallback_path = output_dir / f"[JM{album_id}].pdf"
+    fallback_path = output_dir / _pdf_filename(album_id, title)
     try:
         fallback_path.write_bytes(img2pdf.convert([str(path) for path in image_paths]))
     except Exception as exc:
@@ -150,9 +176,9 @@ def _remove_existing_pdfs(output_dir: Path) -> None:
         safe_pdf_path.unlink(missing_ok=True)
 
 
-def _finalize_or_convert_pdf(album_id: str, output_dir: Path, images_dir: Path) -> Path:
+def _finalize_or_convert_pdf(album_id: str, output_dir: Path, images_dir: Path, title: str | None = None) -> Path:
     try:
-        return _finalize_single_pdf(album_id, output_dir)
+        return _finalize_single_pdf(album_id, output_dir, preferred_title=title)
     except PdfGenerationError as exc:
         if not _can_fallback_to_image_conversion(exc):
             raise
@@ -164,8 +190,8 @@ def _finalize_or_convert_pdf(album_id: str, output_dir: Path, images_dir: Path) 
             album_id,
         )
         _remove_existing_pdfs(output_dir)
-        _write_images_to_pdf(album_id, images_dir, output_dir)
-        return _finalize_single_pdf(album_id, output_dir)
+        _write_images_to_pdf(album_id, images_dir, output_dir, title=title)
+        return _finalize_single_pdf(album_id, output_dir, preferred_title=title)
 
 
 def _cleanup_downloaded_images(images_dir: Path, job_path: Path) -> None:
@@ -177,7 +203,7 @@ def _cleanup_downloaded_images(images_dir: Path, job_path: Path) -> None:
     shutil.rmtree(safe_images_dir, ignore_errors=True)
 
 
-def _finalize_single_pdf(album_id: str, output_dir: Path) -> Path:
+def _finalize_single_pdf(album_id: str, output_dir: Path, preferred_title: str | None = None) -> Path:
     output_dir = output_dir.resolve()
     pdfs = [path for path in output_dir.rglob("*.pdf") if path.is_file()]
 
@@ -193,12 +219,13 @@ def _finalize_single_pdf(album_id: str, output_dir: Path) -> Path:
 
     pdf_path = _ensure_child_path(non_empty_pdfs[0], output_dir)
     prefix = f"[JM{album_id}]"
-    current_name = sanitize_filename(pdf_path.name, fallback=f"{prefix}.pdf")
-
-    if f"JM{album_id}" not in current_name.upper():
-        title = re.sub(rf"^(?:JM)?{re.escape(album_id)}[\s_\-]*", "", pdf_path.stem, flags=re.I)
-        title = sanitize_filename(title, fallback="album", max_length=120)
-        current_name = f"{prefix}{title}.pdf"
+    if preferred_title:
+        current_name = _pdf_filename(album_id, preferred_title)
+    else:
+        current_name = sanitize_filename(pdf_path.name, fallback=f"{prefix}.pdf")
+        if f"JM{album_id}" not in current_name.upper():
+            title = re.sub(rf"^(?:JM)?{re.escape(album_id)}[\s_\-]*", "", pdf_path.stem, flags=re.I)
+            current_name = _pdf_filename(album_id, title)
 
     final_name = sanitize_filename(current_name, fallback=f"{prefix}.pdf")
     if f"JM{album_id}" not in final_name.upper():
@@ -221,6 +248,41 @@ def _set_job_download_dir(option: object, images_dir: Path) -> None:
         option.dir_rule.base_dir = str(images_dir)
     except Exception:
         logger.warning("Could not override jmcomic dir_rule.base_dir; using option file value.")
+
+
+def _env_positive_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s; ignoring.", name)
+        return None
+    if parsed <= 0:
+        logger.warning("Invalid non-positive integer for %s; ignoring.", name)
+        return None
+    return parsed
+
+
+def _set_download_threading(option: object) -> None:
+    image_threads = _env_positive_int("JM_DOWNLOAD_IMAGE_THREADS")
+    photo_threads = _env_positive_int("JM_DOWNLOAD_PHOTO_THREADS")
+    if image_threads is None and photo_threads is None:
+        return
+
+    try:
+        if image_threads is not None:
+            option.download.threading.image = image_threads
+        if photo_threads is not None:
+            option.download.threading.photo = photo_threads
+        logger.info(
+            "Using JMComic download threading: image=%s, photo=%s",
+            option.download.threading.image,
+            option.download.threading.photo,
+        )
+    except Exception:
+        logger.warning("Could not override jmcomic download threading; using option file values.")
 
 
 def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Path) -> Path:
@@ -246,10 +308,12 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
         _load_img2pdf_module()
         option = create_option_by_file(str(option_file))
         _set_job_download_dir(option, images_dir)
+        _set_download_threading(option)
         stdout = StringIO()
         stderr = StringIO()
+        album_title = None
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            download_album(
+            album, _downloader = download_album(
                 album_id,
                 option,
                 extra=Feature.export_pdf(
@@ -258,6 +322,7 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
                     delete_original_file=False,
                 ),
             )
+            album_title = _album_title_from_detail(album_id, album)
         _log_captured_jmcomic_output(stdout, stderr)
     except DownloaderError:
         raise
@@ -268,7 +333,7 @@ def download_album_pdf(album_id: str, option_path: str | Path, job_dir: str | Pa
             raise AlbumNotFoundError("JM 内容不存在或不可访问") from exc
         raise DownloadError(_download_error_message(exc)) from exc
 
-    final_path = _finalize_or_convert_pdf(album_id, output_dir, images_dir)
+    final_path = _finalize_or_convert_pdf(album_id, output_dir, images_dir, title=album_title)
     _cleanup_downloaded_images(images_dir, job_path)
     return final_path
 

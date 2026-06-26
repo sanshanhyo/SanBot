@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -251,6 +252,21 @@ def test_pdf_not_generated_raises(tmp_path: Path) -> None:
         downloader._finalize_single_pdf("123456", tmp_path)
 
 
+def test_pdf_renamed_with_album_title(tmp_path: Path) -> None:
+    output_dir = tmp_path / "pdf"
+    output_dir.mkdir()
+    (output_dir / "123456_Original Name.pdf").write_bytes(b"%PDF-1.4\n")
+
+    pdf_path = downloader._finalize_single_pdf(
+        "123456",
+        output_dir,
+        preferred_title='A/B: "Title"?',
+    )
+
+    assert pdf_path.name == "[JM123456]A_B_ _Title__.pdf"
+    assert pdf_path.read_bytes() == b"%PDF-1.4\n"
+
+
 def test_fallback_pdf_generated_from_downloaded_images(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -271,11 +287,32 @@ def test_fallback_pdf_generated_from_downloaded_images(
 
     monkeypatch.setattr(downloader, "_load_img2pdf_module", lambda: FakeImg2Pdf)
 
-    pdf_path = downloader._finalize_or_convert_pdf("123456", output_dir, tmp_path / "images")
+    pdf_path = downloader._finalize_or_convert_pdf(
+        "123456",
+        output_dir,
+        tmp_path / "images",
+        title="A Test Title",
+    )
 
-    assert pdf_path.name == "[JM123456].pdf"
+    assert pdf_path.name == "[JM123456]A Test Title.pdf"
     assert pdf_path.read_bytes() == b"%PDF-1.4\n"
     assert [Path(path).name for path in FakeImg2Pdf.converted_paths] == ["2.jpg", "10.jpg"]
+
+
+def test_download_threading_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    option = SimpleNamespace(
+        download=SimpleNamespace(
+            threading=SimpleNamespace(image=20, photo=4),
+        ),
+    )
+
+    monkeypatch.setenv("JM_DOWNLOAD_IMAGE_THREADS", "40")
+    monkeypatch.setenv("JM_DOWNLOAD_PHOTO_THREADS", "8")
+
+    downloader._set_download_threading(option)
+
+    assert option.download.threading.image == 40
+    assert option.download.threading.photo == 8
 
 
 def test_console_progress_bar_with_total(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

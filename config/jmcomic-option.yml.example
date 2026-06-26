@@ -18,7 +18,8 @@ download:
   image:
     decode: true
   threading:
-    # Increase carefully. Too high may trigger rate limits or make uploads slower overall.
+    # Increase carefully. Too high may trigger rate limits.
+    # You can also override these with JM_DOWNLOAD_IMAGE_THREADS and JM_DOWNLOAD_PHOTO_THREADS.
     image: 20
     photo: 4
 
