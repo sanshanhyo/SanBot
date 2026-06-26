@@ -19,6 +19,7 @@ COOKIE_LOG_RE = re.compile(
     r"(cookies['\"]?\s*:\s*['\"]?)([^'\"\]}]+)|"
     r"(AVS['\"]?\s*:\s*['\"]?)([^'\"\]}]+)"
 )
+MAX_FILENAME_BYTES = 180
 DEFAULT_MAX_IMAGE_THREADS = 16
 DEFAULT_MAX_PHOTO_THREADS = 4
 
@@ -47,7 +48,32 @@ class PreviewError(DownloaderError):
     pass
 
 
-def sanitize_filename(name: str, fallback: str = "output.pdf", max_length: int = 180) -> str:
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _truncate_filename_bytes(name: str, fallback: str, max_bytes: int) -> str:
+    suffix = Path(name).suffix
+    stem = Path(name).stem if suffix else name
+    suffix_bytes = len(suffix.encode("utf-8"))
+    stem_budget = max(1, max_bytes - suffix_bytes)
+    stem = _truncate_utf8(stem, stem_budget).strip(" .")
+    if stem:
+        return f"{stem}{suffix}"
+
+    fallback = _truncate_utf8(fallback, max_bytes).strip(" .")
+    return fallback or "output.pdf"
+
+
+def sanitize_filename(
+    name: str,
+    fallback: str = "output.pdf",
+    max_length: int = 180,
+    max_bytes: int = MAX_FILENAME_BYTES,
+) -> str:
     cleaned = ILLEGAL_FILENAME_CHARS_RE.sub("_", name)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     if not cleaned:
@@ -56,6 +82,8 @@ def sanitize_filename(name: str, fallback: str = "output.pdf", max_length: int =
         stem = Path(cleaned).stem[: max_length - 4].strip(" .")
         suffix = Path(cleaned).suffix or ".pdf"
         cleaned = f"{stem}{suffix}"
+    if len(cleaned.encode("utf-8")) > max_bytes:
+        cleaned = _truncate_filename_bytes(cleaned, fallback, max_bytes)
     return cleaned
 
 

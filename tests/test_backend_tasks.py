@@ -392,6 +392,16 @@ def test_pdf_renamed_with_album_title(tmp_path: Path) -> None:
     assert pdf_path.read_bytes() == b"%PDF-1.4\n"
 
 
+def test_pdf_filename_is_truncated_by_utf8_bytes() -> None:
+    title = "譚雅奉旨生子之事 + 口內敏感的譚雅醬的故事 " * 12
+
+    filename = downloader._pdf_filename("434803", title)
+
+    assert filename.startswith("[JM434803]")
+    assert filename.endswith(".pdf")
+    assert len(filename.encode("utf-8")) <= downloader.MAX_FILENAME_BYTES
+
+
 def test_fallback_pdf_generated_from_downloaded_images(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

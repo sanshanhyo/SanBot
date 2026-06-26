@@ -155,6 +155,16 @@ def test_split_pdf_for_upload_creates_valid_parts(tmp_path: Path) -> None:
             assert len(part_pdf.pages) == 1
 
 
+def test_part_filename_is_truncated_by_utf8_bytes() -> None:
+    filename = "[JM434803]" + ("譚雅奉旨生子之事" * 30) + ".pdf"
+
+    part_name = bot_main._part_filename(filename, 1, 3)
+
+    assert part_name.startswith("part01-of03_")
+    assert part_name.endswith(".pdf")
+    assert len(part_name.encode("utf-8")) <= bot_main.MAX_FILENAME_BYTES
+
+
 @pytest.mark.asyncio
 async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -> None:
     napcat = FakeNapCat()
@@ -169,7 +179,7 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
         TaskCollector(),
     )
 
-    assert napcat.sent == [("10001", "用法：@机器人 JM123456")]
+    assert napcat.sent == [("10001", "用法：@我 JM123456")]
     assert backend.created == []
 
 
@@ -197,9 +207,9 @@ async def test_handle_group_message_sends_preview_without_creating_job(tmp_path:
     assert backend.previewed == ["123456"]
     assert backend.created == []
     assert tasks.count == 0
-    assert napcat.sent[0] == ("10001", "收到 JM123456，正在获取信息...")
+    assert napcat.sent[0] == ("10001", "我已经接收到 JM123456，正在用全力获取信息中(绝对没有偷懒！)...")
     assert napcat.sent[1] == ("10001", "IMAGE:https://example.test/cover.jpg")
-    assert "标题：A Test Album" in napcat.sent[2][1]
+    assert "标题是A Test Album" in napcat.sent[2][1]
     assert ("10001", "20001") in state.pending_downloads
 
 
@@ -235,7 +245,10 @@ async def test_confirm_download_creates_job(tmp_path: Path) -> None:
     )
 
     assert backend.created == [("123456", "10001", "20001", 80)]
-    assert napcat.sent[-1] == ("10001", "已接收 JM123456，任务编号：job-123\n预计时间：预计约 5-8 分钟")
+    assert napcat.sent[-1] == (
+        "10001",
+        "我已经接收到 JM123456 啦，任务编号是 job-123\n我预计时间是 预计约 5-8 分钟，请你稍等片刻啦",
+    )
     assert tasks.count == 1
     assert state.pending_downloads == {}
 
@@ -314,7 +327,7 @@ async def test_new_jm_is_rejected_when_user_has_active_download(tmp_path: Path) 
     assert backend.previewed == []
     assert napcat.sent[-1] == (
         "10001",
-        "你已有 JM123456 正在下载或排队中，回复“取消下载”可以停止当前任务。",
+        "JM123456 已经正在下载或排队中啦！回复“取消下载”可以停止当前任务。",
     )
 
 
@@ -353,7 +366,7 @@ async def test_failed_job_message_includes_error_code(tmp_path: Path) -> None:
 
     assert napcat.sent[-1] == (
         "10001",
-        "JM123456 任务失败：下载失败，请稍后重试\n报错码：JM_DOWNLOAD_FAILED",
+        "JM123456 任务失败｡ﾟヽ(ﾟ´Д`)ﾉﾟ｡\n下载失败，请稍后重试\n报错码：JM_DOWNLOAD_FAILED",
     )
 
 
@@ -374,7 +387,7 @@ async def test_upload_success(tmp_path: Path) -> None:
     assert napcat.upload_attempts == 1
     assert napcat.uploads[0][0] == "10001"
     assert napcat.uploads[0][2] == "[JM123456]title.pdf"
-    assert napcat.sent[-1] == ("10001", "JM123456 已完成，PDF 已上传：[JM123456]title.pdf")
+    assert napcat.sent[-1] == ("10001", "锵锵！JM123456 已完成啦ʕง•ᴥ•ʔ，请你查收⸜(* ॑꒳ ॑* )⸝")
 
 
 @pytest.mark.asyncio
@@ -401,7 +414,10 @@ async def test_large_upload_uses_split_parts(monkeypatch: pytest.MonkeyPatch, tm
 
     assert [upload[2] for upload in napcat.uploads] == ["part1.pdf", "part2.pdf"]
     assert "已拆分为 2 个文件上传" in napcat.sent[-2][1]
-    assert napcat.sent[-1] == ("10001", "JM123456 已完成，PDF 分卷已全部上传。")
+    assert napcat.sent[-1] == (
+        "10001",
+        "锵锵！JM123456 已完成啦ʕง•ᴥ•ʔ，由于文件过大，PDF进行了分卷，请你查收⸜(* ॑꒳ ॑* )⸝",
+    )
 
 
 @pytest.mark.asyncio
@@ -424,4 +440,4 @@ async def test_upload_retries_until_success(monkeypatch: pytest.MonkeyPatch, tmp
 
     assert napcat.upload_attempts == 3
     assert len(napcat.uploads) == 1
-    assert napcat.sent[-1][1].startswith("JM123456 已完成")
+    assert "JM123456 已完成" in napcat.sent[-1][1]

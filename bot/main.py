@@ -28,6 +28,7 @@ DEFAULT_CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes",
 DEFAULT_CANCEL_WORDS = {"取消", "取消下载", "取消任务", "不要", "否", "不下", "n", "no"}
 DEFAULT_ACTIVE_CANCEL_WORDS = DEFAULT_CANCEL_WORDS | {"停止下载", "停止任务"}
 DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_FILENAME_BYTES = 180
 
 
 class UploadPreparationError(Exception):
@@ -127,7 +128,18 @@ class BotState:
 def _safe_filename(name: str, fallback: str) -> str:
     cleaned = ILLEGAL_FILENAME_CHARS_RE.sub("_", name)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return cleaned or fallback
+    cleaned = cleaned or fallback
+    if len(cleaned.encode("utf-8")) <= MAX_FILENAME_BYTES:
+        return cleaned
+
+    suffix = Path(cleaned).suffix
+    stem = Path(cleaned).stem if suffix else cleaned
+    suffix_bytes = len(suffix.encode("utf-8"))
+    stem_budget = max(1, MAX_FILENAME_BYTES - suffix_bytes)
+    stem = stem.encode("utf-8")[:stem_budget].decode("utf-8", errors="ignore").strip(" .")
+    if stem:
+        return f"{stem}{suffix}"
+    return fallback
 
 
 def _confirm_words() -> set[str]:
@@ -620,7 +632,7 @@ def _part_filename(filename: str, index: int, total: int) -> str:
     if len(stem) > 120:
         stem = stem[:120].strip(" .")
     stem = stem or "upload"
-    return f"part{index:02d}-of{total:02d}_{stem}.pdf"
+    return _safe_filename(f"part{index:02d}-of{total:02d}_{stem}.pdf", f"part{index:02d}-of{total:02d}.pdf")
 
 
 def _format_bytes(size: int) -> str:
