@@ -29,12 +29,15 @@ class NapCatClient:
         http_url: str,
         access_token: str | None = None,
         reconnect_seconds: float = 5.0,
+        request_timeout_seconds: float = 60.0,
+        upload_timeout_seconds: float = 900.0,
     ) -> None:
         self.ws_url = ws_url
         self.http_url = http_url.rstrip("/")
         self.access_token = access_token
         self.reconnect_seconds = reconnect_seconds
-        self._client = httpx.AsyncClient(base_url=self.http_url, timeout=60.0)
+        self.upload_timeout_seconds = upload_timeout_seconds
+        self._client = httpx.AsyncClient(base_url=self.http_url, timeout=request_timeout_seconds)
 
     async def __aenter__(self) -> "NapCatClient":
         return self
@@ -131,13 +134,21 @@ class NapCatClient:
         return await self._call_api(
             "/upload_group_file",
             {"group_id": str(group_id), "file": str(path), "name": name},
+            timeout=httpx.Timeout(self.upload_timeout_seconds),
         )
 
-    async def _call_api(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _call_api(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        timeout: httpx.Timeout | float | None = None,
+    ) -> dict[str, Any]:
         try:
-            response = await self._client.post(endpoint, json=payload, headers=self._headers())
+            response = await self._client.post(endpoint, json=payload, headers=self._headers(), timeout=timeout)
             response.raise_for_status()
             data = response.json()
+        except httpx.TimeoutException as exc:
+            raise NapCatAPIError("NapCat HTTP API 调用超时") from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise NapCatAPIError("NapCat HTTP API 调用失败") from exc
 

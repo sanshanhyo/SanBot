@@ -44,5 +44,6 @@ class AlbumPreviewResponse(BaseModel):
     title: str
     cover_url: str | None = None
     page_count: int | None = None
+    page_count_is_estimated: bool = False
     estimated_seconds: int | None = None
     estimated_text: str

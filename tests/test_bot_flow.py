@@ -34,13 +34,14 @@ class FakeNapCat:
 
 
 class FakeCreateBackend:
-    def __init__(self) -> None:
+    def __init__(self, page_count: int | None = 80) -> None:
         self.created: list[tuple[str, str, str, int | None]] = []
         self.previewed: list[str] = []
         self.cancelled: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
         self.cancelled_active: list[tuple[str, str]] = []
         self.active_job: dict | None = None
+        self.page_count = page_count
 
     async def get_active_job(self, group_id: str, user_id: str) -> dict | None:
         self.active_queries.append((group_id, user_id))
@@ -56,7 +57,7 @@ class FakeCreateBackend:
             "album_id": album_id,
             "title": "A Test Album",
             "cover_url": "https://example.test/cover.jpg",
-            "page_count": 120,
+            "page_count": self.page_count,
             "estimated_seconds": 300,
             "estimated_text": "预计约 5-8 分钟",
         }
@@ -205,8 +206,58 @@ async def test_confirm_download_creates_job(tmp_path: Path) -> None:
         tasks,
     )
 
-    assert backend.created == [("123456", "10001", "20001", 120)]
+    assert backend.created == [("123456", "10001", "20001", 80)]
     assert napcat.sent[-1] == ("10001", "已接收 JM123456，任务编号：job-123\n预计时间：预计约 5-8 分钟")
+    assert tasks.count == 1
+    assert state.pending_downloads == {}
+
+
+@pytest.mark.asyncio
+async def test_large_album_requires_second_confirmation(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend(page_count=120)
+    tasks = TaskCollector()
+    state = BotState(pending_downloads={})
+    settings = _settings(tmp_path)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "下载"}}]),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    assert backend.created == []
+    assert tasks.count == 0
+    assert "超过 100 页" in napcat.sent[-1][1]
+    assert state.pending_downloads[("10001", "20001")].large_warning_sent is True
+
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "下载"}}]),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    assert backend.created == [("123456", "10001", "20001", 120)]
     assert tasks.count == 1
     assert state.pending_downloads == {}
 

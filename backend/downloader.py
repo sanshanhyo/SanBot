@@ -82,6 +82,74 @@ def _pdf_filename(album_id: str, title: str | None = None) -> str:
     return sanitize_filename(f"{prefix}{safe_title}.pdf", fallback=f"{prefix}.pdf")
 
 
+def _positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _preview_page_count_stop_after() -> int:
+    return (_env_positive_int("LARGE_ALBUM_WARNING_PAGES") or 100) + 1
+
+
+def _episode_ids(album: object) -> list[str]:
+    episode_list = getattr(album, "episode_list", None)
+    ids: list[str] = []
+    if isinstance(episode_list, list):
+        for episode in episode_list:
+            if isinstance(episode, (tuple, list)) and episode:
+                ids.append(str(episode[0]))
+
+    if ids:
+        return ids
+
+    album_id = getattr(album, "album_id", None) or getattr(album, "id", None)
+    return [str(album_id)] if album_id else []
+
+
+def _photo_page_count(photo: object) -> int | None:
+    page_arr = getattr(photo, "page_arr", None)
+    if isinstance(page_arr, list):
+        count = len(page_arr)
+        return count if count > 0 else None
+
+    try:
+        count = len(photo)  # type: ignore[arg-type]
+    except (TypeError, AttributeError):
+        return None
+    return count if count > 0 else None
+
+
+def _resolve_preview_page_count(
+    client: object,
+    album: object,
+    stop_after: int | None = None,
+) -> tuple[int | None, bool]:
+    page_count = _positive_int_or_none(getattr(album, "page_count", None))
+    if page_count is not None:
+        return page_count, False
+
+    total = 0
+    found_any = False
+    for photo_id in _episode_ids(album):
+        try:
+            photo = client.get_photo_detail(photo_id, fetch_album=False)
+        except Exception:
+            logger.debug("Could not fetch photo detail for preview page count: %s", photo_id, exc_info=True)
+            continue
+        count = _photo_page_count(photo)
+        if count is None:
+            continue
+        found_any = True
+        total += count
+        if stop_after is not None and total >= stop_after:
+            return total, True
+
+    return (total if found_any else None), False
+
+
 def _looks_like_missing_album(exc: Exception) -> bool:
     text = str(exc).lower()
     needles = ("404", "not found", "不存在", "无法找到", "不存在该", "album not")
@@ -372,7 +440,13 @@ def fetch_album_preview(album_id: str, option_path: str | Path) -> dict:
     try:
         with redirect_stdout(stdout), redirect_stderr(stderr):
             option = create_option_by_file(str(option_file))
-            album = option.new_jm_client().get_album_detail(album_id)
+            client = option.new_jm_client()
+            album = client.get_album_detail(album_id)
+            page_count, page_count_is_estimated = _resolve_preview_page_count(
+                client,
+                album,
+                stop_after=_preview_page_count_stop_after(),
+            )
         _log_captured_jmcomic_output(stdout, stderr)
     except DownloaderError:
         raise
@@ -382,18 +456,13 @@ def fetch_album_preview(album_id: str, option_path: str | Path) -> dict:
             raise PreviewError("JM 内容不存在或不可访问") from exc
         raise PreviewError(_download_error_message(exc)) from exc
 
-    page_count = getattr(album, "page_count", None)
-    try:
-        page_count = int(page_count) if page_count is not None else None
-    except (TypeError, ValueError):
-        page_count = None
-
     estimated_seconds = estimate_download_seconds(page_count)
     return {
         "album_id": str(album_id),
         "title": str(getattr(album, "title", None) or getattr(album, "name", None) or f"JM{album_id}"),
         "cover_url": JmcomicText.get_album_cover_url(album_id),
         "page_count": page_count,
+        "page_count_is_estimated": page_count_is_estimated,
         "estimated_seconds": estimated_seconds,
         "estimated_text": format_estimated_time(estimated_seconds),
     }

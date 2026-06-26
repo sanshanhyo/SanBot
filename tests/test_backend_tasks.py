@@ -315,6 +315,37 @@ def test_download_threading_env_override(monkeypatch: pytest.MonkeyPatch) -> Non
     assert option.download.threading.photo == 8
 
 
+def test_preview_page_count_falls_back_to_photo_details() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        def get_photo_detail(self, photo_id: str, fetch_album: bool = False) -> SimpleNamespace:
+            self.requested.append(photo_id)
+            pages = {
+                "p1": ["1.jpg"] * 80,
+                "p2": ["1.jpg"] * 30,
+                "p3": ["1.jpg"] * 20,
+            }[photo_id]
+            return SimpleNamespace(page_arr=pages)
+
+    album = SimpleNamespace(
+        page_count=0,
+        episode_list=[
+            ("p1", "1", "chapter 1"),
+            ("p2", "2", "chapter 2"),
+            ("p3", "3", "chapter 3"),
+        ],
+    )
+    client = FakeClient()
+
+    page_count, is_estimated = downloader._resolve_preview_page_count(client, album, stop_after=101)
+
+    assert page_count == 110
+    assert is_estimated is True
+    assert client.requested == ["p1", "p2"]
+
+
 def test_console_progress_bar_with_total(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     manager = JobManager(
         JobManagerConfig(

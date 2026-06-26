@@ -11,6 +11,7 @@
 - 支持 `JM123456`、`jm123456` 两种输入；纯数字不会触发下载。
 - 一条消息只允许一个编号。
 - 先发送封面和标题预览，用户回复确认后才加入下载队列。
+- 如果预览检测到页数超过阈值，用户需要二次确认后才会开始下载。
 - 同一群内同一用户同时只能有一个排队中、下载中或转换中的任务。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
 - 后端控制台会显示下载进度条；如果预览拿到了页数，会显示百分比和 `已下载/总页数`。
@@ -68,6 +69,8 @@ BOT_QQ_ID=
 NAPCAT_WS_URL=ws://127.0.0.1:3001
 NAPCAT_HTTP_URL=http://127.0.0.1:3000
 NAPCAT_ACCESS_TOKEN=
+NAPCAT_HTTP_TIMEOUT_SECONDS=60
+NAPCAT_UPLOAD_TIMEOUT_SECONDS=900
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 MAX_CONCURRENT_JOBS=1
@@ -77,6 +80,7 @@ JOB_PROGRESS_CHECK_SECONDS=10
 PREVIEW_TIMEOUT_SECONDS=30
 JOB_PROGRESS_NOTIFY_SECONDS=60
 JOB_CONFIRM_TIMEOUT_SECONDS=300
+LARGE_ALBUM_WARNING_PAGES=100
 JM_DOWNLOAD_IMAGE_THREADS=40
 JM_DOWNLOAD_PHOTO_THREADS=8
 JMCOMIC_OPTION_PATH=./config/jmcomic-option.yml
@@ -91,6 +95,8 @@ DATA_DIR=./data
 | `NAPCAT_WS_URL` | NapCatQQ OneBot 11 WebSocket 地址 |
 | `NAPCAT_HTTP_URL` | NapCatQQ OneBot 11 HTTP 地址 |
 | `NAPCAT_ACCESS_TOKEN` | NapCatQQ access token，没有则留空 |
+| `NAPCAT_HTTP_TIMEOUT_SECONDS` | NapCatQQ 普通 HTTP API 超时，默认 `60` 秒 |
+| `NAPCAT_UPLOAD_TIMEOUT_SECONDS` | NapCatQQ 上传群文件超时，默认 `900` 秒；大 PDF 建议保持较大 |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
@@ -100,6 +106,7 @@ DATA_DIR=./data
 | `PREVIEW_TIMEOUT_SECONDS` | 获取漫画封面和标题的超时时间，默认 `30` 秒 |
 | `JOB_PROGRESS_NOTIFY_SECONDS` | 群内进度通知间隔，默认 `60` 秒 |
 | `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `300` 秒 |
+| `LARGE_ALBUM_WARNING_PAGES` | 超过多少页触发二次确认，默认 `100`；设为 `0` 可关闭 |
 | `JM_DOWNLOAD_IMAGE_THREADS` | JMComic 图片下载线程数，留空则使用 `config/jmcomic-option.yml` |
 | `JM_DOWNLOAD_PHOTO_THREADS` | JMComic 章节下载线程数，留空则使用 `config/jmcomic-option.yml` |
 | `JMCOMIC_OPTION_PATH` | JMComic 配置文件路径 |
@@ -205,6 +212,8 @@ PDF 生成后会校验：
 ```text
 下载
 ```
+
+如果页数超过 `LARGE_ALBUM_WARNING_PAGES`，机器人会先发送警告，用户需要再次回复“下载”才会加入队列。
 
 确认后，机器人会加入下载队列并回复：
 

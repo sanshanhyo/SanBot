@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +63,9 @@ class BotSettings:
     poll_interval_seconds: float = 5.0
     progress_notify_seconds: int = 60
     confirm_timeout_seconds: int = 300
+    large_album_warning_pages: int = 100
+    napcat_http_timeout_seconds: int = 60
+    napcat_upload_timeout_seconds: int = 900
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -82,6 +85,9 @@ class BotSettings:
             poll_interval_seconds=max(1, _env_int("JOB_POLL_INTERVAL_SECONDS", 5)),
             progress_notify_seconds=max(10, _env_int("JOB_PROGRESS_NOTIFY_SECONDS", 60)),
             confirm_timeout_seconds=max(30, _env_int("JOB_CONFIRM_TIMEOUT_SECONDS", 300)),
+            large_album_warning_pages=max(0, _env_int("LARGE_ALBUM_WARNING_PAGES", 100)),
+            napcat_http_timeout_seconds=max(1, _env_int("NAPCAT_HTTP_TIMEOUT_SECONDS", 60)),
+            napcat_upload_timeout_seconds=max(60, _env_int("NAPCAT_UPLOAD_TIMEOUT_SECONDS", 900)),
         )
 
 
@@ -92,6 +98,7 @@ class PendingDownload:
     estimated_text: str
     page_count: int | None
     expires_at: float
+    large_warning_sent: bool = False
 
 
 @dataclass
@@ -237,6 +244,20 @@ async def _handle_pending_confirmation(
     if text not in CONFIRM_WORDS:
         return False
 
+    if _needs_large_album_confirmation(pending.page_count, settings) and not pending.large_warning_sent:
+        state.pending_downloads[key] = replace(pending, large_warning_sent=True)
+        await _safe_send(
+            napcat,
+            group_id,
+            (
+                f"警告：JM{pending.album_id} 检测到 {pending.page_count} 页，"
+                f"超过 {settings.large_album_warning_pages} 页。\n"
+                "这类任务下载、转换和上传都会更久，PDF 也会更大。\n"
+                "如果确认继续，请再次回复“下载”；回复“取消”放弃。"
+            ),
+        )
+        return True
+
     state.pending_downloads.pop(key, None)
     await _create_job_and_monitor(
         pending.album_id,
@@ -298,6 +319,7 @@ async def _send_album_preview(
     estimated_text = str(preview.get("estimated_text") or "预计时间未知")
     cover_url = preview.get("cover_url")
     page_count = preview.get("page_count")
+    page_count_is_estimated = bool(preview.get("page_count_is_estimated"))
 
     if isinstance(cover_url, str) and cover_url:
         try:
@@ -305,7 +327,17 @@ async def _send_album_preview(
         except NapCatAPIError:
             logger.exception("Could not send album cover.")
 
-    page_text = f"{page_count} 页" if isinstance(page_count, int) and page_count > 0 else "页数未知"
+    if isinstance(page_count, int) and page_count > 0:
+        page_text = f"至少 {page_count} 页" if page_count_is_estimated else f"{page_count} 页"
+    else:
+        page_text = "页数未知"
+    extra_warning = ""
+    if _needs_large_album_confirmation(page_count, settings):
+        extra_warning = (
+            f"\n提示：页数超过 {settings.large_album_warning_pages} 页，"
+            "回复“下载”后还需要再次确认。"
+        )
+
     await _safe_send(
         napcat,
         group_id,
@@ -315,6 +347,7 @@ async def _send_album_preview(
             f"页数：{page_text}\n"
             f"预计时间：{estimated_text}\n"
             f"回复“下载”确认加入队列，回复“取消”放弃。"
+            f"{extra_warning}"
         ),
     )
     state.pending_downloads[(group_id, user_id)] = PendingDownload(
@@ -323,6 +356,14 @@ async def _send_album_preview(
         estimated_text=estimated_text,
         page_count=page_count if isinstance(page_count, int) and page_count > 0 else None,
         expires_at=asyncio.get_running_loop().time() + settings.confirm_timeout_seconds,
+    )
+
+
+def _needs_large_album_confirmation(page_count: object, settings: BotSettings) -> bool:
+    return (
+        settings.large_album_warning_pages > 0
+        and isinstance(page_count, int)
+        and page_count > settings.large_album_warning_pages
     )
 
 
@@ -473,6 +514,8 @@ async def run_bot() -> None:
         settings.napcat_ws_url,
         settings.napcat_http_url,
         settings.napcat_access_token,
+        request_timeout_seconds=settings.napcat_http_timeout_seconds,
+        upload_timeout_seconds=settings.napcat_upload_timeout_seconds,
     ) as napcat, BackendClient(
         settings.backend_url,
         settings.backend_api_token,
