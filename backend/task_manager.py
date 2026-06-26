@@ -82,6 +82,7 @@ class JobManager:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task[None]] = []
         self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._termination_tasks: set[asyncio.Task[None]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
 
     def initialize(self) -> None:
@@ -157,6 +158,12 @@ class JobManager:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers.clear()
 
+        termination_tasks = list(self._termination_tasks)
+        for task in termination_tasks:
+            task.cancel()
+        await asyncio.gather(*termination_tasks, return_exceptions=True)
+        self._termination_tasks.clear()
+
     async def join(self) -> None:
         await self._queue.join()
 
@@ -202,7 +209,7 @@ class JobManager:
                 raise DuplicateJobError(existing) from exc
             raise
 
-        await self._queue.put(job_id)
+        self._queue.put_nowait(job_id)
         created = self.get_job(job_id)
         if created is None:
             raise RuntimeError("created job disappeared")
@@ -230,12 +237,33 @@ class JobManager:
         self._mark_failed(job_id, reason, ErrorCode.USER_CANCELLED)
         process = self._active_processes.get(job_id)
         if process is not None:
-            await self._terminate_download_process(process)
+            self._terminate_download_process_soon(job_id, process)
 
         cancelled = self.get_job(job_id)
         if cancelled is None:
             raise RuntimeError("cancelled job disappeared")
         return cancelled
+
+    def _terminate_download_process_soon(self, job_id: str, process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+
+        task = asyncio.create_task(
+            self._terminate_download_process(process),
+            name=f"terminate-download-{job_id}",
+        )
+        self._termination_tasks.add(task)
+
+        def _done(done_task: asyncio.Task[None]) -> None:
+            self._termination_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Background termination failed for job %s.", job_id)
+
+        task.add_done_callback(_done)
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

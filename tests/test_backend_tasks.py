@@ -199,6 +199,58 @@ async def test_cancel_job_terminates_active_process(
     assert stored["error_code"] == "USER_CANCELLED"
 
 
+@pytest.mark.asyncio
+async def test_cancel_job_returns_before_slow_process_termination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=30,
+        )
+    )
+    manager.initialize()
+    job_id = "slow-cancel-job"
+    now = manager._now()
+    with manager._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                job_id, album_id, group_id, user_id, status,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, "555555", "10001", "20001", JobStatus.DOWNLOADING.value, now, now),
+        )
+
+    termination_started = asyncio.Event()
+
+    async def slow_terminate(_process: object) -> None:
+        termination_started.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(manager, "_terminate_download_process", slow_terminate)
+    manager._active_processes[job_id] = SimpleNamespace(returncode=None)  # type: ignore[assignment]
+
+    started_at = asyncio.get_running_loop().time()
+    try:
+        cancelled = await asyncio.wait_for(manager.cancel_job(job_id), timeout=0.5)
+        await asyncio.sleep(0)
+    finally:
+        await manager.stop()
+
+    assert cancelled is not None
+    assert asyncio.get_running_loop().time() - started_at < 0.5
+    assert termination_started.is_set()
+    stored = manager.get_job(job_id)
+    assert stored is not None
+    assert stored["status"] == JobStatus.FAILED.value
+    assert stored["error_code"] == "USER_CANCELLED"
+
 
 @pytest.mark.asyncio
 async def test_same_user_active_job_is_rejected(tmp_path: Path) -> None:
