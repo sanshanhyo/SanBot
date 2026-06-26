@@ -19,14 +19,14 @@ from .message_parser import (
     text_from_segments,
 )
 from .napcat_client import NapCatAPIError, NapCatClient
+from .lang import text as lang_text, words as lang_words
 
 logger = logging.getLogger(__name__)
 
-USAGE_MESSAGE = "用法：@机器人 JM123456"
 ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes", "ok"}
-CANCEL_WORDS = {"取消", "取消下载", "取消任务", "不要", "否", "不下", "n", "no"}
-ACTIVE_CANCEL_WORDS = CANCEL_WORDS | {"取消下载", "取消任务", "停止下载", "停止任务"}
+DEFAULT_CONFIRM_WORDS = {"下载", "确认", "同意", "是", "要", "y", "yes", "ok"}
+DEFAULT_CANCEL_WORDS = {"取消", "取消下载", "取消任务", "不要", "否", "不下", "n", "no"}
+DEFAULT_ACTIVE_CANCEL_WORDS = DEFAULT_CANCEL_WORDS | {"停止下载", "停止任务"}
 DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
@@ -68,7 +68,7 @@ class BotSettings:
     data_dir: Path
     job_timeout_seconds: int
     poll_interval_seconds: float = 5.0
-    progress_notify_seconds: int = 60
+    progress_notify_seconds: int = 300
     confirm_timeout_seconds: int = 300
     large_album_warning_pages: int = 100
     napcat_http_timeout_seconds: int = 60
@@ -91,7 +91,7 @@ class BotSettings:
             data_dir=Path(os.getenv("DATA_DIR", "./data")),
             job_timeout_seconds=max(1, _env_int("JOB_TIMEOUT_SECONDS", 1800)),
             poll_interval_seconds=max(1, _env_int("JOB_POLL_INTERVAL_SECONDS", 5)),
-            progress_notify_seconds=max(10, _env_int("JOB_PROGRESS_NOTIFY_SECONDS", 60)),
+            progress_notify_seconds=max(0, _env_int("JOB_PROGRESS_NOTIFY_SECONDS", 300)),
             confirm_timeout_seconds=max(30, _env_int("JOB_CONFIRM_TIMEOUT_SECONDS", 300)),
             large_album_warning_pages=max(0, _env_int("LARGE_ALBUM_WARNING_PAGES", 100)),
             napcat_http_timeout_seconds=max(1, _env_int("NAPCAT_HTTP_TIMEOUT_SECONDS", 60)),
@@ -128,6 +128,18 @@ def _safe_filename(name: str, fallback: str) -> str:
     cleaned = ILLEGAL_FILENAME_CHARS_RE.sub("_", name)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     return cleaned or fallback
+
+
+def _confirm_words() -> set[str]:
+    return lang_words("confirm_words", DEFAULT_CONFIRM_WORDS)
+
+
+def _cancel_words() -> set[str]:
+    return lang_words("cancel_words", DEFAULT_CANCEL_WORDS)
+
+
+def _active_cancel_words() -> set[str]:
+    return lang_words("active_cancel_words", DEFAULT_ACTIVE_CANCEL_WORDS)
 
 
 async def handle_group_message(
@@ -194,32 +206,32 @@ async def handle_group_message(
     )
 
     if parse_result.action == ParseAction.USAGE:
-        await _safe_send(napcat, group_id, USAGE_MESSAGE)
+        await _safe_send(napcat, group_id, lang_text("usage"))
         return
 
     if parse_result.action == ParseAction.ERROR:
-        await _safe_send(napcat, group_id, parse_result.error_message or USAGE_MESSAGE)
+        await _safe_send(napcat, group_id, lang_text(parse_result.error_key or "usage"))
         return
 
     album_id = parse_result.album_id
     if album_id is None:
-        await _safe_send(napcat, group_id, USAGE_MESSAGE)
+        await _safe_send(napcat, group_id, lang_text("usage"))
         return
 
-    await _safe_send(napcat, group_id, f"收到 JM{album_id}，正在获取信息...")
+    await _safe_send(napcat, group_id, lang_text("received_fetching", album_id=album_id))
 
     try:
         active = await backend.get_active_job(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not query active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, f"后端暂不可用，请稍后再试\n报错码：{exc.error_code}")
+        await _safe_send(napcat, group_id, lang_text("backend_unavailable", error_code=exc.error_code))
         return
 
     if active is not None:
         await _safe_send(
             napcat,
             group_id,
-            f"你已有 JM{active.get('album_id')} 正在下载或排队中，回复“取消下载”可以停止当前任务。",
+            lang_text("active_job_exists", album_id=active.get("album_id")),
         )
         return
 
@@ -245,12 +257,12 @@ async def _handle_pending_confirmation(
     if not text:
         return False
 
-    if text in CANCEL_WORDS:
+    if text in _cancel_words():
         state.pending_downloads.pop(key, None)
-        await _safe_send(napcat, group_id, f"已取消 JM{pending.album_id}。")
+        await _safe_send(napcat, group_id, lang_text("cancelled_pending", album_id=pending.album_id))
         return True
 
-    if text not in CONFIRM_WORDS:
+    if text not in _confirm_words():
         return False
 
     if _needs_large_album_confirmation(pending.page_count, settings) and not pending.large_warning_sent:
@@ -258,11 +270,11 @@ async def _handle_pending_confirmation(
         await _safe_send(
             napcat,
             group_id,
-            (
-                f"警告：JM{pending.album_id} 检测到 {pending.page_count} 页，"
-                f"超过 {settings.large_album_warning_pages} 页。\n"
-                "这类任务下载、转换和上传都会更久，PDF 也会更大。\n"
-                "如果确认继续，请再次回复“下载”；回复“取消”放弃。"
+            lang_text(
+                "large_album_warning",
+                album_id=pending.album_id,
+                page_count=pending.page_count,
+                limit=settings.large_album_warning_pages,
             ),
         )
         return True
@@ -277,7 +289,7 @@ async def _handle_pending_confirmation(
         backend,
         spawn_task,
         page_count=pending.page_count,
-        extra_message=f"预计时间：{pending.estimated_text}",
+        extra_message=lang_text("estimated_time_line", estimated_text=pending.estimated_text),
     )
     return True
 
@@ -290,21 +302,21 @@ async def _handle_active_cancel(
     backend: BackendClient,
 ) -> bool:
     text = text_from_segments(event.get("message")).strip().lower()
-    if text not in ACTIVE_CANCEL_WORDS:
+    if text not in _active_cancel_words():
         return False
 
     try:
         cancelled = await backend.cancel_active_job(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not cancel active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, f"取消失败，请稍后再试\n报错码：{exc.error_code}")
+        await _safe_send(napcat, group_id, lang_text("cancel_failed", error_code=exc.error_code))
         return True
 
     if cancelled is None:
-        await _safe_send(napcat, group_id, "你没有正在进行的任务。")
+        await _safe_send(napcat, group_id, lang_text("no_active_job"))
         return True
 
-    await _safe_send(napcat, group_id, f"已取消 JM{cancelled.get('album_id')} 任务。")
+    await _safe_send(napcat, group_id, lang_text("cancelled_active", album_id=cancelled.get("album_id")))
     return True
 
 
@@ -321,11 +333,15 @@ async def _send_album_preview(
         preview = await backend.get_album_preview(album_id)
     except BackendError as exc:
         logger.exception("Could not fetch album preview.")
-        await _safe_send(napcat, group_id, f"JM{album_id} 获取信息失败：{exc}\n报错码：{exc.error_code}")
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text("preview_failed", album_id=album_id, error=exc, error_code=exc.error_code),
+        )
         return
 
     title = str(preview.get("title") or f"JM{album_id}")
-    estimated_text = str(preview.get("estimated_text") or "预计时间未知")
+    estimated_text = str(preview.get("estimated_text") or lang_text("estimated_unknown"))
     cover_url = preview.get("cover_url")
     page_count = preview.get("page_count")
     page_count_is_estimated = bool(preview.get("page_count_is_estimated"))
@@ -337,26 +353,26 @@ async def _send_album_preview(
             logger.exception("Could not send album cover.")
 
     if isinstance(page_count, int) and page_count > 0:
-        page_text = f"至少 {page_count} 页" if page_count_is_estimated else f"{page_count} 页"
+        page_text = lang_text(
+            "page_count_estimated" if page_count_is_estimated else "page_count_exact",
+            page_count=page_count,
+        )
     else:
-        page_text = "页数未知"
+        page_text = lang_text("page_count_unknown")
     extra_warning = ""
     if _needs_large_album_confirmation(page_count, settings):
-        extra_warning = (
-            f"\n提示：页数超过 {settings.large_album_warning_pages} 页，"
-            "回复“下载”后还需要再次确认。"
-        )
+        extra_warning = lang_text("large_album_hint", limit=settings.large_album_warning_pages)
 
     await _safe_send(
         napcat,
         group_id,
-        (
-            f"JM{album_id}\n"
-            f"标题：{title}\n"
-            f"页数：{page_text}\n"
-            f"预计时间：{estimated_text}\n"
-            f"回复“下载”确认加入队列，回复“取消”放弃。"
-            f"{extra_warning}"
+        lang_text(
+            "album_preview",
+            album_id=album_id,
+            title=title,
+            page_text=page_text,
+            estimated_text=estimated_text,
+            extra_warning=extra_warning,
         ),
     )
     state.pending_downloads[(group_id, user_id)] = PendingDownload(
@@ -391,15 +407,19 @@ async def _create_job_and_monitor(
         created = await backend.create_job(album_id, group_id, user_id, page_count=page_count)
     except DuplicateJobError as exc:
         suffix = f"：{exc.job_id}" if exc.job_id else ""
-        await _safe_send(napcat, group_id, f"JM{album_id} 已有进行中的任务{suffix}\n报错码：{exc.error_code}")
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text("duplicate_job", album_id=album_id, suffix=suffix, error_code=exc.error_code),
+        )
         return
     except BackendError as exc:
         logger.exception("Could not create backend job.")
-        await _safe_send(napcat, group_id, f"后端暂不可用，请稍后再试\n报错码：{exc.error_code}")
+        await _safe_send(napcat, group_id, lang_text("backend_unavailable", error_code=exc.error_code))
         return
 
     job_id = str(created["job_id"])
-    message = f"已接收 JM{album_id}，任务编号：{job_id}"
+    message = lang_text("job_accepted", album_id=album_id, job_id=job_id)
     if extra_message:
         message = f"{message}\n{extra_message}"
     await _safe_send(napcat, group_id, message)
@@ -427,9 +447,13 @@ async def monitor_job(
 
         status = job.get("status")
         if status == "failed":
-            error_message = job.get("error_message") or "任务失败，请稍后重试"
+            error_message = job.get("error_message") or lang_text("generic_job_failed")
             error_code = job.get("error_code") or "UNKNOWN"
-            await _safe_send(napcat, group_id, f"JM{album_id} 任务失败：{error_message}\n报错码：{error_code}")
+            await _safe_send(
+                napcat,
+                group_id,
+                lang_text("job_failed", album_id=album_id, error_message=error_message, error_code=error_code),
+            )
             return
 
         if status == "completed":
@@ -441,11 +465,17 @@ async def monitor_job(
         progress_key = (status, progress_message, downloaded_files)
         now = asyncio.get_running_loop().time()
         if (
-            progress_message
+            settings.progress_notify_seconds > 0
+            and status != "downloading"
+            and progress_message
             and progress_key != last_progress_key
             and now - last_progress_at >= settings.progress_notify_seconds
         ):
-            await _safe_send(napcat, group_id, f"JM{album_id} 进度：{progress_message}")
+            await _safe_send(
+                napcat,
+                group_id,
+                lang_text("job_progress", album_id=album_id, progress_message=progress_message),
+            )
             last_progress_at = now
             last_progress_key = progress_key
 
@@ -469,23 +499,25 @@ async def _download_and_upload(
         pdf_path = await backend.download_file(job_id, dest_path)
     except BackendError as exc:
         logger.exception("Could not download PDF for job %s.", job_id)
-        await _safe_send(napcat, group_id, f"JM{album_id} PDF 下载失败，请稍后重试\n报错码：{exc.error_code}")
+        await _safe_send(napcat, group_id, lang_text("pdf_download_failed", album_id=album_id, error_code=exc.error_code))
         return
 
     try:
         upload_files = await asyncio.to_thread(_prepare_upload_files, pdf_path, filename, settings.max_upload_bytes)
     except UploadPreparationError as exc:
         logger.exception("Could not prepare upload files for job %s.", job_id)
-        await _safe_send(napcat, group_id, f"JM{album_id} PDF 上传准备失败：{exc}\n报错码：PDF_UPLOAD_PREPARE_FAILED")
+        await _safe_send(napcat, group_id, lang_text("upload_prepare_failed", album_id=album_id, error=exc))
         return
 
     if len(upload_files) > 1:
         await _safe_send(
             napcat,
             group_id,
-            (
-                f"JM{album_id} PDF 较大（{_format_bytes(pdf_path.stat().st_size)}），"
-                f"已拆分为 {len(upload_files)} 个文件上传。"
+            lang_text(
+                "large_pdf_split",
+                album_id=album_id,
+                size=_format_bytes(pdf_path.stat().st_size),
+                count=len(upload_files),
             ),
         )
 
@@ -494,17 +526,14 @@ async def _download_and_upload(
             await _safe_send(
                 napcat,
                 group_id,
-                (
-                    f"JM{album_id} 已完成，但第 {index}/{len(upload_files)} 个文件上传失败，请稍后重试\n"
-                    "报错码：NAPCAT_UPLOAD_FAILED"
-                ),
+                lang_text("upload_part_failed", album_id=album_id, index=index, count=len(upload_files)),
             )
             return
 
     if len(upload_files) == 1:
-        await _safe_send(napcat, group_id, f"JM{album_id} 已完成，PDF 已上传：{filename}")
+        await _safe_send(napcat, group_id, lang_text("upload_completed", album_id=album_id, filename=filename))
     else:
-        await _safe_send(napcat, group_id, f"JM{album_id} 已完成，PDF 分卷已全部上传。")
+        await _safe_send(napcat, group_id, lang_text("upload_completed_parts", album_id=album_id))
 
 
 async def _upload_with_retries(
@@ -538,13 +567,13 @@ def _split_pdf_for_upload(pdf_path: Path, filename: str, max_upload_bytes: int) 
     try:
         import pikepdf
     except ImportError as exc:
-        raise UploadPreparationError("缺少 pikepdf 依赖，无法拆分大 PDF") from exc
+        raise UploadPreparationError(lang_text("upload_error_missing_pikepdf")) from exc
 
     split_dir = pdf_path.parent / f"{pdf_path.stem}_parts"
     parent = pdf_path.parent.resolve()
     split_dir = split_dir.resolve()
     if not split_dir.is_relative_to(parent):
-        raise UploadPreparationError("PDF 拆分目录异常")
+        raise UploadPreparationError(lang_text("upload_error_split_dir"))
     if split_dir.exists():
         shutil.rmtree(split_dir)
     split_dir.mkdir(parents=True, exist_ok=True)
@@ -573,14 +602,14 @@ def _split_pdf_for_upload(pdf_path: Path, filename: str, max_upload_bytes: int) 
                 part_pdf.save(part_path)
                 part_pdf.close()
                 if not part_path.is_file() or part_path.stat().st_size <= 0:
-                    raise UploadPreparationError("PDF 分卷文件无效")
+                    raise UploadPreparationError(lang_text("upload_error_invalid_part"))
                 parts.append((part_path, part_name))
                 start = end
                 index += 1
     except UploadPreparationError:
         raise
     except Exception as exc:
-        raise UploadPreparationError("PDF 拆分失败") from exc
+        raise UploadPreparationError(lang_text("upload_error_split_failed")) from exc
 
     return parts or [(pdf_path, filename)]
 
@@ -591,7 +620,7 @@ def _part_filename(filename: str, index: int, total: int) -> str:
     if len(stem) > 120:
         stem = stem[:120].strip(" .")
     stem = stem or "upload"
-    return f"{stem}.part{index:02d}-of{total:02d}.pdf"
+    return f"part{index:02d}-of{total:02d}_{stem}.pdf"
 
 
 def _format_bytes(size: int) -> str:

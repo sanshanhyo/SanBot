@@ -20,7 +20,7 @@ class ParseAction(StrEnum):
 class ParseResult:
     action: ParseAction
     album_id: str | None = None
-    error_message: str | None = None
+    error_key: str | None = None
 
 
 def _decode_cq_value(value: str) -> str:
@@ -98,7 +98,7 @@ def extract_album_id(message_segments: Any) -> tuple[str | None, str | None]:
     if not matches:
         return None, None
     if len(matches) > 1:
-        return None, "一条消息只能包含一个 JM 编号"
+        return None, "multiple_album_numbers"
     return matches[0], None
 
 
@@ -115,7 +115,7 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
 
     album_id, error = extract_album_id(message_segments)
     if error:
-        return ParseResult(ParseAction.ERROR, error_message=error)
+        return ParseResult(ParseAction.ERROR, error_key=error)
     if album_id is None:
         return ParseResult(ParseAction.USAGE)
     return ParseResult(ParseAction.OK, album_id=album_id)

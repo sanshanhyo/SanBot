@@ -15,12 +15,15 @@
 - 同一群内同一用户同时只能有一个排队中、下载中或转换中的任务。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
 - 后端控制台会显示下载进度条；如果预览拿到了页数，会显示百分比和 `已下载/总页数`。
+- 群内只发送关键状态，不会按“已保存 N 张图片”频繁刷屏。
 - 任务失败会保存并返回稳定报错码，Bot 群消息也会显示报错码。
 - JMComic 下载和 PDF 导出在独立子进程执行，总超时或长时间无文件写入都会终止子进程，避免单个卡死任务堵住队列。
 - PDF 文件会命名为 `[JM编号]漫画标题.pdf`，并自动清理 Windows 不允许的字符。
 - 下载完成后调用 NapCatQQ `upload_group_file` 上传 PDF。
-- PDF 过大时会自动拆分为多个分卷 PDF 上传，避免 NapCat/QQ 大文件上传失败。
+- PDF 过大时会自动拆分为多个分卷 PDF 上传，分卷文件名以 `part01-of03_` 开头，方便在 QQ 群文件列表里识别。
 - 上传失败最多重试 3 次。
+- 后端会定期清理过期缓存，避免 `data/` 目录无限增长。
+- Bot 群内文案集中放在 `lang/zh_CN.json`，后续维护提示语不用翻代码。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
 
 ## 环境要求
@@ -73,6 +76,7 @@ NAPCAT_ACCESS_TOKEN=
 NAPCAT_HTTP_TIMEOUT_SECONDS=60
 NAPCAT_UPLOAD_TIMEOUT_SECONDS=900
 NAPCAT_MAX_UPLOAD_BYTES=104857600
+BOT_LANG=zh_CN
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 MAX_CONCURRENT_JOBS=1
@@ -80,9 +84,13 @@ JOB_TIMEOUT_SECONDS=1800
 JOB_STALL_TIMEOUT_SECONDS=300
 JOB_PROGRESS_CHECK_SECONDS=10
 PREVIEW_TIMEOUT_SECONDS=30
-JOB_PROGRESS_NOTIFY_SECONDS=60
+JOB_PROGRESS_NOTIFY_SECONDS=300
 JOB_CONFIRM_TIMEOUT_SECONDS=300
 LARGE_ALBUM_WARNING_PAGES=100
+CACHE_CLEANUP_INTERVAL_SECONDS=3600
+JOB_CACHE_TTL_SECONDS=259200
+BOT_DOWNLOAD_CACHE_TTL_SECONDS=259200
+PREVIEW_CACHE_TTL_SECONDS=86400
 JM_DOWNLOAD_IMAGE_THREADS=40
 JM_DOWNLOAD_PHOTO_THREADS=8
 JMCOMIC_OPTION_PATH=./config/jmcomic-option.yml
@@ -100,6 +108,7 @@ DATA_DIR=./data
 | `NAPCAT_HTTP_TIMEOUT_SECONDS` | NapCatQQ 普通 HTTP API 超时，默认 `60` 秒 |
 | `NAPCAT_UPLOAD_TIMEOUT_SECONDS` | NapCatQQ 上传群文件超时，默认 `900` 秒；大 PDF 建议保持较大 |
 | `NAPCAT_MAX_UPLOAD_BYTES` | 单个上传文件大小上限，超过会自动拆分 PDF；默认 `104857600`，即 100MB |
+| `BOT_LANG` | Bot 群内提示语言文件，默认 `zh_CN`，对应 `lang/zh_CN.json` |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
@@ -107,9 +116,13 @@ DATA_DIR=./data
 | `JOB_STALL_TIMEOUT_SECONDS` | 下载子进程无文件变化的卡住超时，默认 `300` 秒；设为 `0` 可关闭 |
 | `JOB_PROGRESS_CHECK_SECONDS` | 后端检查下载进度和卡住状态的间隔，默认 `10` 秒 |
 | `PREVIEW_TIMEOUT_SECONDS` | 获取漫画封面和标题的超时时间，默认 `30` 秒 |
-| `JOB_PROGRESS_NOTIFY_SECONDS` | 群内进度通知间隔，默认 `60` 秒 |
+| `JOB_PROGRESS_NOTIFY_SECONDS` | 群内非下载阶段进度通知间隔，默认 `300` 秒；后端控制台进度条不受影响 |
 | `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `300` 秒 |
 | `LARGE_ALBUM_WARNING_PAGES` | 超过多少页触发二次确认，默认 `100`；设为 `0` 可关闭 |
+| `CACHE_CLEANUP_INTERVAL_SECONDS` | 后端缓存清理间隔，默认 `3600` 秒；设为 `0` 可关闭 |
+| `JOB_CACHE_TTL_SECONDS` | 已完成/已失败任务目录保留时间，默认 `259200` 秒，即 3 天 |
+| `BOT_DOWNLOAD_CACHE_TTL_SECONDS` | Bot 下载到本地准备上传的 PDF 缓存保留时间，默认 3 天 |
+| `PREVIEW_CACHE_TTL_SECONDS` | 漫画预览临时文件保留时间，默认 `86400` 秒，即 1 天 |
 | `JM_DOWNLOAD_IMAGE_THREADS` | JMComic 图片下载线程数，留空则使用 `config/jmcomic-option.yml` |
 | `JM_DOWNLOAD_PHOTO_THREADS` | JMComic 章节下载线程数，留空则使用 `config/jmcomic-option.yml` |
 | `JMCOMIC_OPTION_PATH` | JMComic 配置文件路径 |
@@ -336,9 +349,11 @@ Invoke-RestMethod `
 2. 启动后端：`.\.venv\Scripts\python.exe -m backend.main`
 3. 启动 Bot：`.\.venv\Scripts\python.exe -m bot.main`
 4. 在 QQ 群发送：`@机器人 JM123456`
-5. 检查机器人是否回复任务编号。
-6. 等待下载和转换完成。
-7. 检查群文件里是否出现 PDF。
+5. 检查机器人是否发送封面、标题和页数预览。
+6. 回复：`下载`
+7. 检查机器人是否回复任务编号。
+8. 等待下载和转换完成。
+9. 检查群文件里是否出现 PDF。
 
 如果失败，先看两个终端里的日志。群内只会发送简短错误和报错码，完整异常会留在服务日志中。
 
@@ -387,7 +402,8 @@ project/
 │  ├─ main.py
 │  ├─ napcat_client.py
 │  ├─ message_parser.py
-│  └─ backend_client.py
+│  ├─ backend_client.py
+│  └─ lang.py
 ├─ backend/
 │  ├─ main.py
 │  ├─ downloader.py
@@ -395,6 +411,8 @@ project/
 │  └─ models.py
 ├─ config/
 │  └─ jmcomic-option.yml.example
+├─ lang/
+│  └─ zh_CN.json
 ├─ data/
 ├─ tests/
 ├─ .env.example

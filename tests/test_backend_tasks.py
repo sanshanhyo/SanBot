@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -245,6 +246,78 @@ async def test_cancel_active_job_for_user_marks_failed(tmp_path: Path) -> None:
     assert stored["error_code"] == "USER_CANCELLED"
 
     assert manager.find_active_job_for_user("10001", "20001") is None
+
+
+@pytest.mark.asyncio
+async def test_cache_cleanup_removes_old_terminal_files_only(tmp_path: Path) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            cache_cleanup_interval_seconds=0,
+            job_cache_ttl_seconds=1,
+            bot_download_cache_ttl_seconds=1,
+            preview_cache_ttl_seconds=1,
+        )
+    )
+    manager.initialize()
+
+    old_time = "2000-01-01T00:00:00+00:00"
+    completed_job_id = "old-completed-job"
+    active_job_id = "old-active-job"
+    with manager._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO jobs (
+                job_id, album_id, group_id, user_id, status,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    completed_job_id,
+                    "111111",
+                    "10001",
+                    "20001",
+                    JobStatus.COMPLETED.value,
+                    old_time,
+                    old_time,
+                ),
+                (
+                    active_job_id,
+                    "222222",
+                    "10001",
+                    "20002",
+                    JobStatus.DOWNLOADING.value,
+                    old_time,
+                    old_time,
+                ),
+            ],
+        )
+
+    completed_dir = manager.jobs_dir / completed_job_id
+    active_dir = manager.jobs_dir / active_job_id
+    completed_dir.mkdir(parents=True)
+    active_dir.mkdir(parents=True)
+
+    bot_cache_dir = manager.bot_downloads_dir / "old-upload"
+    bot_cache_dir.mkdir(parents=True)
+    (bot_cache_dir / "old.pdf").write_bytes(b"%PDF-1.4\n")
+    preview_file = manager.previews_dir / "old-preview.json"
+    preview_file.parent.mkdir(parents=True)
+    preview_file.write_text("{}", encoding="utf-8")
+    for path in [bot_cache_dir / "old.pdf", bot_cache_dir, preview_file]:
+        os.utime(path, (0, 0))
+
+    stats = await manager.cleanup_cache_once()
+
+    assert stats == {"job_dirs": 1, "bot_downloads": 1, "previews": 1}
+    assert not completed_dir.exists()
+    assert active_dir.exists()
+    assert not bot_cache_dir.exists()
+    assert not preview_file.exists()
 
 
 def test_pdf_not_generated_raises(tmp_path: Path) -> None:

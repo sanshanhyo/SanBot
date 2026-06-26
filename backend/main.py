@@ -68,6 +68,10 @@ class BackendSettings:
     preview_timeout_seconds: int
     job_stall_timeout_seconds: int
     job_progress_check_seconds: float
+    cache_cleanup_interval_seconds: int
+    job_cache_ttl_seconds: int
+    bot_download_cache_ttl_seconds: int
+    preview_cache_ttl_seconds: int
     backend_api_token: str | None
 
     @classmethod
@@ -81,6 +85,10 @@ class BackendSettings:
             preview_timeout_seconds=max(1, _env_int("PREVIEW_TIMEOUT_SECONDS", 30)),
             job_stall_timeout_seconds=max(0, _env_int("JOB_STALL_TIMEOUT_SECONDS", 300)),
             job_progress_check_seconds=max(1.0, _env_float("JOB_PROGRESS_CHECK_SECONDS", 10.0)),
+            cache_cleanup_interval_seconds=max(0, _env_int("CACHE_CLEANUP_INTERVAL_SECONDS", 3600)),
+            job_cache_ttl_seconds=max(0, _env_int("JOB_CACHE_TTL_SECONDS", 259200)),
+            bot_download_cache_ttl_seconds=max(0, _env_int("BOT_DOWNLOAD_CACHE_TTL_SECONDS", 259200)),
+            preview_cache_ttl_seconds=max(0, _env_int("PREVIEW_CACHE_TTL_SECONDS", 86400)),
             backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
         )
 
@@ -101,6 +109,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             job_timeout_seconds=settings.job_timeout_seconds,
             job_stall_timeout_seconds=settings.job_stall_timeout_seconds,
             progress_interval_seconds=settings.job_progress_check_seconds,
+            cache_cleanup_interval_seconds=settings.cache_cleanup_interval_seconds,
+            job_cache_ttl_seconds=settings.job_cache_ttl_seconds,
+            bot_download_cache_ttl_seconds=settings.bot_download_cache_ttl_seconds,
+            preview_cache_ttl_seconds=settings.preview_cache_ttl_seconds,
         )
     )
     app.state.settings = settings

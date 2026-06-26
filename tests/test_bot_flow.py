@@ -146,9 +146,9 @@ def test_split_pdf_for_upload_creates_valid_parts(tmp_path: Path) -> None:
 
     assert len(parts) == 3
     assert [name for _path, name in parts] == [
-        "album.part01-of03.pdf",
-        "album.part02-of03.pdf",
-        "album.part03-of03.pdf",
+        "part01-of03_album.pdf",
+        "part02-of03_album.pdf",
+        "part03-of03_album.pdf",
     ]
     for part_path, _part_name in parts:
         with pikepdf.Pdf.open(part_path) as part_pdf:

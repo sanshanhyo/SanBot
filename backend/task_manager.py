@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,10 @@ class JobManagerConfig:
     job_timeout_seconds: int = 1800
     job_stall_timeout_seconds: int = 300
     progress_interval_seconds: float = 10.0
+    cache_cleanup_interval_seconds: int = 3600
+    job_cache_ttl_seconds: int = 259200
+    bot_download_cache_ttl_seconds: int = 259200
+    preview_cache_ttl_seconds: int = 86400
 
 
 class JobManager:
@@ -71,10 +76,13 @@ class JobManager:
         self.config = config
         self.data_dir = config.data_dir.resolve()
         self.jobs_dir = self.data_dir / "jobs"
+        self.bot_downloads_dir = self.data_dir / "bot_downloads"
+        self.previews_dir = self.data_dir / "previews"
         self.db_path = self.data_dir / "jobs.sqlite3"
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._workers: list[asyncio.Task[None]] = []
         self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     def initialize(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -135,8 +143,15 @@ class JobManager:
             asyncio.create_task(self._worker(worker_id), name=f"job-worker-{worker_id}")
             for worker_id in range(worker_count)
         ]
+        if self.config.cache_cleanup_interval_seconds > 0:
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop(), name="cache-cleanup")
 
     async def stop(self) -> None:
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            await asyncio.gather(self._cleanup_task, return_exceptions=True)
+            self._cleanup_task = None
+
         for worker in self._workers:
             worker.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
@@ -144,6 +159,9 @@ class JobManager:
 
     async def join(self) -> None:
         await self._queue.join()
+
+    async def cleanup_cache_once(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._cleanup_cache_sync)
 
     async def create_job(self, album_id: str, group_id: str, user_id: str, page_count: int | None = None) -> dict[str, Any]:
         existing = self.find_active_job_for_user(group_id, user_id)
@@ -305,6 +323,55 @@ class JobManager:
                 self._mark_failed(job_id, "任务执行失败，请查看服务日志", ErrorCode.WORKER_UNEXPECTED)
             finally:
                 self._queue.task_done()
+
+    async def _cleanup_loop(self) -> None:
+        while True:
+            try:
+                stats = await self.cleanup_cache_once()
+                removed = sum(stats.values())
+                if removed:
+                    logger.info("Cache cleanup removed %s item(s): %s", removed, stats)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Cache cleanup failed.")
+            await asyncio.sleep(self.config.cache_cleanup_interval_seconds)
+
+    def _cleanup_cache_sync(self) -> dict[str, int]:
+        now = datetime.now(timezone.utc)
+        stats = {"job_dirs": 0, "bot_downloads": 0, "previews": 0}
+        active_statuses = {JobStatus.QUEUED.value, JobStatus.DOWNLOADING.value, JobStatus.CONVERTING.value}
+
+        with self._connect() as conn:
+            rows = conn.execute("SELECT job_id, status, updated_at FROM jobs").fetchall()
+
+        known_job_ids = {str(row["job_id"]) for row in rows}
+        active_job_ids = {str(row["job_id"]) for row in rows if row["status"] in active_statuses}
+        job_cutoff = now - timedelta(seconds=max(0, self.config.job_cache_ttl_seconds))
+
+        for row in rows:
+            job_id = str(row["job_id"])
+            if job_id in active_job_ids:
+                continue
+            updated_at = self._parse_datetime(str(row["updated_at"]))
+            if updated_at is not None and updated_at <= job_cutoff:
+                if self._remove_child_tree(self.jobs_dir / job_id, self.jobs_dir):
+                    stats["job_dirs"] += 1
+
+        if self.jobs_dir.exists():
+            for path in self.jobs_dir.iterdir():
+                if not path.is_dir() or path.name in known_job_ids or path.name in active_job_ids:
+                    continue
+                if self._path_mtime_before(path, job_cutoff) and self._remove_child_tree(path, self.jobs_dir):
+                    stats["job_dirs"] += 1
+
+        bot_cutoff = now - timedelta(seconds=max(0, self.config.bot_download_cache_ttl_seconds))
+        stats["bot_downloads"] += self._cleanup_children_older_than(self.bot_downloads_dir, bot_cutoff)
+
+        preview_cutoff = now - timedelta(seconds=max(0, self.config.preview_cache_ttl_seconds))
+        stats["previews"] += self._cleanup_children_older_than(self.previews_dir, preview_cutoff)
+
+        return stats
 
     async def _process_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
@@ -727,3 +794,62 @@ class JobManager:
         if seconds % 60 == 0:
             return f"{minutes} 分钟"
         return f"{minutes} 分钟 {seconds % 60} 秒"
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _path_mtime_before(path: Path, cutoff: datetime) -> bool:
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        except OSError:
+            return False
+        return mtime <= cutoff
+
+    def _cleanup_children_older_than(self, directory: Path, cutoff: datetime) -> int:
+        if not directory.exists():
+            return 0
+        removed = 0
+        for path in directory.iterdir():
+            if not self._path_mtime_before(path, cutoff):
+                continue
+            if path.is_dir():
+                removed += 1 if self._remove_child_tree(path, directory) else 0
+            elif self._remove_child_file(path, directory):
+                removed += 1
+        return removed
+
+    @staticmethod
+    def _remove_child_tree(path: Path, parent: Path) -> bool:
+        resolved_path = path.resolve()
+        resolved_parent = parent.resolve()
+        if resolved_path == resolved_parent or not resolved_path.is_relative_to(resolved_parent):
+            return False
+        if not resolved_path.exists():
+            return False
+        try:
+            shutil.rmtree(resolved_path)
+        except OSError:
+            return False
+        return not resolved_path.exists()
+
+    @staticmethod
+    def _remove_child_file(path: Path, parent: Path) -> bool:
+        resolved_path = path.resolve()
+        resolved_parent = parent.resolve()
+        if resolved_path == resolved_parent or not resolved_path.is_relative_to(resolved_parent):
+            return False
+        if not resolved_path.is_file():
+            return False
+        try:
+            resolved_path.unlink()
+        except OSError:
+            return False
+        return True
