@@ -402,6 +402,40 @@ class JobManager:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_user_history(self, group_id: str, user_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        limit = max(1, min(20, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, album_id, group_id, user_id, status,
+                       filename, file_path, error_message, error_code, downloaded_files,
+                       total_files, progress_message, created_at, updated_at
+                FROM jobs
+                WHERE group_id = ? AND user_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (group_id, user_id, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_group_history(self, group_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(50, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id, album_id, group_id, user_id, status,
+                       filename, file_path, error_message, error_code, downloaded_files,
+                       total_files, progress_message, created_at, updated_at
+                FROM jobs
+                WHERE group_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (group_id, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def find_job_by_prefix(self, target: str) -> dict[str, Any] | None:
         target = target.strip()
         if not target:

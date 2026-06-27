@@ -117,6 +117,9 @@ class BotSettings:
     search_confirm_timeout_seconds: int = 600
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
     manager_qq_ids: set[str] = field(default_factory=set)
+    bot_display_name: str = "JMComic QQBot"
+    manager_name: str = "管理者"
+    manager_qq: str = "未配置"
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -124,6 +127,8 @@ class BotSettings:
         bot_qq_id = os.getenv("BOT_QQ_ID")
         if not bot_qq_id:
             raise RuntimeError("BOT_QQ_ID is required")
+        manager_qq_ids = _env_id_set("BOT_MANAGER_QQ_IDS")
+        manager_qq = os.getenv("BOT_MANAGER_QQ") or (sorted(manager_qq_ids)[0] if manager_qq_ids else "未配置")
         return cls(
             bot_qq_id=bot_qq_id,
             napcat_ws_url=os.getenv("NAPCAT_WS_URL", "ws://127.0.0.1:3001"),
@@ -152,7 +157,10 @@ class BotSettings:
                 0,
                 _env_int("USER_COMMAND_COOLDOWN_SECONDS", DEFAULT_USER_COMMAND_COOLDOWN_SECONDS),
             ),
-            manager_qq_ids=_env_id_set("BOT_MANAGER_QQ_IDS"),
+            manager_qq_ids=manager_qq_ids,
+            bot_display_name=os.getenv("BOT_DISPLAY_NAME") or "JMComic QQBot",
+            manager_name=os.getenv("BOT_MANAGER_NAME") or "管理者",
+            manager_qq=manager_qq,
         )
 
 
@@ -361,6 +369,29 @@ async def handle_group_message(
         await _safe_send(napcat, group_id, lang_text(parse_result.error_key or "usage"))
         return
 
+    if parse_result.action == ParseAction.HOME:
+        await _safe_send(napcat, group_id, _format_home_message(settings))
+        return
+
+    if parse_result.action == ParseAction.HELP:
+        await _safe_send(napcat, group_id, lang_text("help_message"))
+        return
+
+    if parse_result.action == ParseAction.FEATURES:
+        await _safe_send(napcat, group_id, lang_text("features_message"))
+        return
+
+    if parse_result.action == ParseAction.HISTORY:
+        await _send_user_history(group_id, user_id, napcat, backend)
+        return
+
+    if parse_result.action == ParseAction.GROUP_HISTORY:
+        if not _can_run_admin_command(event, user_id, settings):
+            await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
+            return
+        await _send_group_history(group_id, napcat, backend)
+        return
+
     if parse_result.action in {ParseAction.OK, ParseAction.SEARCH}:
         remaining = _command_cooldown_remaining(group_id, user_id, settings, state, now)
         if remaining > 0:
@@ -470,6 +501,50 @@ async def _send_admin_queue(
     jobs = payload.get("jobs")
     safe_jobs = [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
     await _safe_send(napcat, group_id, _format_admin_queue(_merge_uploading_jobs(safe_jobs, state)))
+
+
+def _format_home_message(settings: BotSettings) -> str:
+    return lang_text(
+        "bot_home",
+        bot_name=settings.bot_display_name,
+        manager_name=settings.manager_name,
+        manager_qq=settings.manager_qq,
+    )
+
+
+async def _send_user_history(
+    group_id: str,
+    user_id: str,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        payload = await backend.get_user_history(group_id, user_id)
+    except BackendError as exc:
+        logger.exception("Could not fetch user history.")
+        await _safe_send(napcat, group_id, lang_text("history_failed", error_code=exc.error_code))
+        return
+
+    jobs = payload.get("jobs") if isinstance(payload, dict) else []
+    safe_jobs = [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
+    await _safe_send(napcat, group_id, _format_history_jobs(safe_jobs, group_scope=False))
+
+
+async def _send_group_history(
+    group_id: str,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        payload = await backend.get_group_history(group_id)
+    except BackendError as exc:
+        logger.exception("Could not fetch group history.")
+        await _safe_send(napcat, group_id, lang_text("history_failed", error_code=exc.error_code))
+        return
+
+    jobs = payload.get("jobs") if isinstance(payload, dict) else []
+    safe_jobs = [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
+    await _safe_send(napcat, group_id, _format_history_jobs(safe_jobs, group_scope=True))
 
 
 async def _run_admin_cleanup(
@@ -901,6 +976,37 @@ def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
             )
         )
     return "\n".join(lines)
+
+
+def _format_history_jobs(jobs: list[dict[str, Any]], group_scope: bool) -> str:
+    if not jobs:
+        return lang_text("group_history_empty" if group_scope else "user_history_empty")
+
+    lines = [lang_text("group_history_header" if group_scope else "user_history_header")]
+    for index, job in enumerate(jobs[:10], start=1):
+        album_id = str(job.get("album_id") or "?")
+        status = _job_progress_text(job) or _status_label(str(job.get("status") or ""))
+        time_text = _format_history_time(str(job.get("updated_at") or job.get("created_at") or ""))
+        extra = ""
+        if group_scope:
+            extra = lang_text("history_user_suffix", user_id=str(job.get("user_id") or "?"))
+        lines.append(
+            lang_text(
+                "history_line",
+                index=index,
+                album_id=album_id,
+                status=status,
+                time=time_text,
+                extra=extra,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_history_time(value: str) -> str:
+    if not value:
+        return "时间未知"
+    return value.replace("T", " ")[:16]
 
 
 def _merge_uploading_jobs(jobs: list[dict[str, Any]], state: BotState) -> list[dict[str, Any]]:

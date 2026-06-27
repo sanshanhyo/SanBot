@@ -346,6 +346,76 @@ async def test_find_job_by_prefix_supports_album_id_and_short_job_id(tmp_path: P
     assert by_job_id["album_id"] == "111111"
 
 
+def test_history_queries_are_scoped_by_group_and_user(tmp_path: Path) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=5,
+        )
+    )
+    manager.initialize()
+    with manager._connect() as conn:
+        conn.executemany(
+            """
+            INSERT INTO jobs (
+                job_id, album_id, group_id, user_id, status,
+                error_code, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "job-user-new",
+                    "111111",
+                    "10001",
+                    "20001",
+                    JobStatus.COMPLETED.value,
+                    None,
+                    "2026-06-27T10:00:00+00:00",
+                    "2026-06-27T10:10:00+00:00",
+                ),
+                (
+                    "job-user-old",
+                    "222222",
+                    "10001",
+                    "20001",
+                    JobStatus.FAILED.value,
+                    "JOB_TIMEOUT",
+                    "2026-06-27T09:00:00+00:00",
+                    "2026-06-27T09:10:00+00:00",
+                ),
+                (
+                    "job-other-user",
+                    "333333",
+                    "10001",
+                    "20002",
+                    JobStatus.COMPLETED.value,
+                    None,
+                    "2026-06-27T11:00:00+00:00",
+                    "2026-06-27T11:10:00+00:00",
+                ),
+                (
+                    "job-other-group",
+                    "444444",
+                    "10002",
+                    "20001",
+                    JobStatus.COMPLETED.value,
+                    None,
+                    "2026-06-27T12:00:00+00:00",
+                    "2026-06-27T12:10:00+00:00",
+                ),
+            ],
+        )
+
+    user_history = manager.list_user_history("10001", "20001")
+    group_history = manager.list_group_history("10001")
+
+    assert [job["job_id"] for job in user_history] == ["job-user-new", "job-user-old"]
+    assert [job["job_id"] for job in group_history] == ["job-other-user", "job-user-new", "job-user-old"]
+
+
 @pytest.mark.asyncio
 async def test_cancel_active_job_for_user_marks_failed(tmp_path: Path) -> None:
     manager = JobManager(

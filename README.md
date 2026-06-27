@@ -9,7 +9,9 @@
 - 只处理 QQ 群消息。
 - 使用 OneBot 11 结构化消息段判断是否真的 `@` 了机器人。
 - 支持 `JM123456`、`jm123456` 两种输入；纯数字不会触发下载。
-- 可选开启关键词搜索：`@机器人 搜索 关键词`，用户回复序号后进入同一套预览确认流程。
+- 默认开启关键词搜索：`@机器人 搜索 关键词`，用户回复序号后进入同一套预览确认流程。
+- 单独 `@机器人` 会显示机器人介绍；`@机器人 帮助` 和 `@机器人 功能` 会显示使用说明和功能列表。
+- 支持任务历史查询：用户可查自己的最近任务，群管理员可查本群最近任务。
 - 一条消息只允许一个编号。
 - 先发送封面和标题预览，用户回复确认后才加入下载队列。
 - 如果预览检测到页数超过阈值，用户需要二次确认后才会开始下载。
@@ -82,6 +84,9 @@ NAPCAT_MAX_UPLOAD_BYTES=104857600
 NAPCAT_MAX_UPLOAD_FILENAME_BYTES=96
 NAPCAT_UPLOAD_RETRIES=5
 BOT_LANG=zh_CN
+BOT_DISPLAY_NAME=JMComic QQBot
+BOT_MANAGER_NAME=
+BOT_MANAGER_QQ=
 BOT_MANAGER_QQ_IDS=
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
@@ -126,6 +131,9 @@ DATA_DIR=./data
 | `NAPCAT_MAX_UPLOAD_FILENAME_BYTES` | 上传到 QQ 群文件时使用的展示文件名字节上限，默认 `96` |
 | `NAPCAT_UPLOAD_RETRIES` | 单个文件上传失败后的重试次数，默认 `5` |
 | `BOT_LANG` | Bot 群内提示语言文件，默认 `zh_CN`，对应 `lang/zh_CN.json` |
+| `BOT_DISPLAY_NAME` | 群内介绍页显示的机器人名称 |
+| `BOT_MANAGER_NAME` | 群内介绍页显示的机器人管理者名称 |
+| `BOT_MANAGER_QQ` | 群内介绍页显示的管理者 QQ；留空时会使用 `BOT_MANAGER_QQ_IDS` 的第一个 QQ |
 | `BOT_MANAGER_QQ_IDS` | 机器人管理者 QQ 号，多个用英文逗号分隔；管理者可执行清理缓存等维护命令 |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
@@ -241,8 +249,14 @@ PDF 生成后会校验：
 群内使用示例：
 
 ```text
+@机器人
+@机器人 帮助
+@机器人 功能
 @机器人 JM123456
+@机器人 我的任务
 ```
+
+单独 `@机器人` 会显示机器人介绍、项目地址和基础入口。`@机器人 帮助` 会显示指令说明，`@机器人 功能` 会显示当前支持的功能模块。
 
 默认已开启关键词搜索，也可以搜索关键词：
 
@@ -252,7 +266,7 @@ PDF 生成后会校验：
 
 机器人会返回最多 `SEARCH_RESULT_LIMIT` 条结果。用户回复序号后，机器人会继续发送封面、标题、页数和预计时间，并询问是否下载；不会直接加入下载队列。
 
-没有编号时，机器人会回复：
+输入了无法识别的内容时，机器人会回复：
 
 ```text
 用法：@机器人 JM123456
@@ -285,12 +299,13 @@ PDF 生成后会校验：
 ```text
 @机器人 状态
 @机器人 队列
+@机器人 最近任务
 @机器人 取消 JM123456
 @机器人 取消 任务编号前几位
 @机器人 清理缓存
 ```
 
-`状态`、`队列`、`取消` 允许 QQ 群主、QQ群管理员、机器人管理者执行。`清理缓存` 只允许机器人管理者执行。机器人管理者由部署者在 `.env` 的 `BOT_MANAGER_QQ_IDS` 中配置，不等同于 QQ 群管理员。
+`状态`、`队列`、`最近任务`、`取消` 允许 QQ 群主、QQ群管理员、机器人管理者执行。`清理缓存` 只允许机器人管理者执行。机器人管理者由部署者在 `.env` 的 `BOT_MANAGER_QQ_IDS` 中配置，不等同于 QQ 群管理员。
 
 任务完成后，机器人会上传 PDF 并发送完成消息。
 
@@ -308,7 +323,9 @@ PDF 生成后会校验：
 
 - `JM123456` 解析
 - 没有 `@` 机器人时忽略
-- 没有编号时提示用法
+- 单独 `@机器人` 显示介绍页
+- 帮助、功能和任务历史命令
+- 无法识别内容时提示用法
 - 正常创建任务
 - 下载失败
 - PDF 未生成
@@ -316,6 +333,7 @@ PDF 生成后会校验：
 - 上传失败重试
 - 搜索命令解析
 - 搜索结果选择后进入预览确认
+- 任务历史查询按群和用户隔离
 - 管理员命令权限
 - 每群/每用户活跃任务限制
 - 上传阶段管理员取消
@@ -433,11 +451,13 @@ Invoke-RestMethod `
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/active?group_id=...&user_id=...` | 查询某个群用户当前活跃任务 |
 | `POST` | `/api/jobs/active/cancel?group_id=...&user_id=...` | 取消某个群用户当前活跃任务 |
+| `GET` | `/api/jobs/history?group_id=...&user_id=...` | 查询某个群用户的最近任务 |
 | `GET` | `/api/jobs/{job_id}` | 查询任务状态，包含 `downloaded_files`、`total_files`、`error_code` |
 | `POST` | `/api/jobs/{job_id}/cancel` | 按任务编号取消排队中或下载中的任务 |
 | `GET` | `/api/jobs/{job_id}/file` | 下载 PDF |
 | `GET` | `/api/admin/status` | 查询服务器状态、缓存大小和任务统计 |
 | `GET` | `/api/admin/queue` | 查询当前队列和最近错误任务 |
+| `GET` | `/api/admin/history?group_id=...` | 查询某个群的最近任务 |
 | `POST` | `/api/admin/jobs/{target}/cancel` | 管理员按 JM 编号或任务编号取消任务 |
 | `POST` | `/api/admin/cache/cleanup` | 手动清理缓存；有活跃后端任务时会拒绝 |
 

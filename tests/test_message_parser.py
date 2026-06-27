@@ -69,6 +69,71 @@ def test_usage_when_no_number() -> None:
     assert result.action == ParseAction.USAGE
 
 
+def test_empty_at_returns_home() -> None:
+    result = parse_group_message(
+        _event([{"type": "at", "data": {"qq": "12345"}}]),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.HOME
+
+
+def test_help_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 帮助"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.HELP
+
+
+def test_features_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 功能"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.FEATURES
+
+
+def test_history_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 我的任务"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.HISTORY
+
+
+def test_group_history_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 最近任务"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.GROUP_HISTORY
+
+
 def test_plain_number_requires_jm_prefix() -> None:
     result = parse_group_message(
         _event(

@@ -126,6 +126,43 @@ class FakeCreateBackend:
             ]
         }
 
+    async def get_group_history(self, group_id: str, limit: int = 10) -> dict:
+        return {
+            "jobs": [
+                {
+                    "job_id": "group-history-job",
+                    "album_id": "333333",
+                    "group_id": group_id,
+                    "user_id": "20002",
+                    "status": "completed",
+                    "updated_at": "2026-06-27T12:00:00+00:00",
+                }
+            ]
+        }
+
+    async def get_user_history(self, group_id: str, user_id: str, limit: int = 5) -> dict:
+        return {
+            "jobs": [
+                {
+                    "job_id": "user-history-job",
+                    "album_id": "123456",
+                    "group_id": group_id,
+                    "user_id": user_id,
+                    "status": "completed",
+                    "updated_at": "2026-06-27T12:00:00+00:00",
+                },
+                {
+                    "job_id": "failed-history-job",
+                    "album_id": "222222",
+                    "group_id": group_id,
+                    "user_id": user_id,
+                    "status": "failed",
+                    "error_code": "JOB_TIMEOUT",
+                    "updated_at": "2026-06-27T12:10:00+00:00",
+                },
+            ]
+        }
+
     async def cleanup_cache(self) -> dict:
         return {"freed_bytes": 2048, "stats": {"job_dirs": 1, "bot_downloads": 2, "previews": 3}}
 
@@ -231,7 +268,12 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
     backend = FakeCreateBackend()
 
     await handle_group_message(
-        _group_event([{"type": "at", "data": {"qq": "12345"}}]),
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " hello"}},
+            ]
+        ),
         _settings(tmp_path),
         BotState(pending_downloads={}),
         napcat,  # type: ignore[arg-type]
@@ -241,6 +283,139 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
 
     assert napcat.sent == [("10001", "用法：@我 JM123456")]
     assert backend.created == []
+
+
+@pytest.mark.asyncio
+async def test_empty_at_sends_home_message(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(
+        _settings(tmp_path),
+        bot_display_name="测试机器人",
+        manager_name="散山肆水HyO",
+        manager_qq="2456014618",
+    )
+
+    await handle_group_message(
+        _group_event([{"type": "at", "data": {"qq": "12345"}}]),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "这里是「测试机器人」" in napcat.sent[-1][1]
+    assert "散山肆水HyO（QQ：2456014618）" in napcat.sent[-1][1]
+    assert "https://github.com/sanshanhyo/jmcomic-qqbot" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_help_and_features_commands(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 帮助"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 功能"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "使用说明" in napcat.sent[-2][1]
+    assert "当前功能" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_user_history_command(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 我的任务"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "你的最近任务" in napcat.sent[-1][1]
+    assert "JM123456 已完成" in napcat.sent[-1][1]
+    assert "JM222222 错误：JOB_TIMEOUT" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_group_history_requires_admin(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 最近任务"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent[-1] == ("10001", "这个命令需要群主、群管理员或机器人管理者执行。")
+
+
+@pytest.mark.asyncio
+async def test_group_admin_can_query_group_history(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 最近任务"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "本群最近任务" in napcat.sent[-1][1]
+    assert "JM333333 已完成" in napcat.sent[-1][1]
+    assert "用户：20002" in napcat.sent[-1][1]
 
 
 @pytest.mark.asyncio

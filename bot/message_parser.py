@@ -12,6 +12,11 @@ CQ_CODE_PATTERN = re.compile(r"\[CQ:([a-zA-Z0-9_]+)((?:,[^\]]*)?)\]")
 
 class ParseAction(StrEnum):
     IGNORE = "ignore"
+    HOME = "home"
+    HELP = "help"
+    FEATURES = "features"
+    HISTORY = "history"
+    GROUP_HISTORY = "group_history"
     USAGE = "usage"
     OK = "ok"
     SEARCH = "search"
@@ -118,6 +123,23 @@ def extract_search_query(message_segments: Any) -> tuple[str | None, str | None]
     return query, None
 
 
+def extract_control_action(message_segments: Any) -> ParseAction | None:
+    text = re.sub(r"\s+", " ", text_from_segments(message_segments)).strip()
+    if not text:
+        return ParseAction.HOME
+
+    lowered = text.lower()
+    if lowered in {"帮助", "help", "使用说明", "说明"}:
+        return ParseAction.HELP
+    if lowered in {"功能", "功能列表", "模块", "modules", "features"}:
+        return ParseAction.FEATURES
+    if lowered in {"历史", "我的任务", "任务历史", "我的历史", "history"}:
+        return ParseAction.HISTORY
+    if lowered in {"最近任务", "群任务", "群历史", "最近历史", "group history"}:
+        return ParseAction.GROUP_HISTORY
+    return None
+
+
 def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     if event.get("message_type") != "group":
         return ParseResult(ParseAction.IGNORE)
@@ -134,6 +156,10 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
         return ParseResult(ParseAction.ERROR, error_key=search_error)
     if search_query is not None:
         return ParseResult(ParseAction.SEARCH, search_query=search_query)
+
+    control_action = extract_control_action(message_segments)
+    if control_action is not None:
+        return ParseResult(control_action)
 
     album_id, error = extract_album_id(message_segments)
     if error:

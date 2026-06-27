@@ -430,6 +430,20 @@ async def admin_queue(
     return {"jobs": jobs}
 
 
+@app.get("/api/admin/history")
+async def admin_group_history(
+    group_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    limit: int = 10,
+) -> dict:
+    _require_api_token(request, authorization)
+    if not group_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid group_id")
+    jobs = await asyncio.to_thread(_manager(request).list_group_history, group_id, limit)
+    return {"jobs": jobs}
+
+
 @app.post("/api/admin/cache/cleanup")
 async def admin_cleanup_cache(
     request: Request,
@@ -651,6 +665,21 @@ async def cancel_active_job(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="active job not found")
     return JobResponse(**job)
+
+
+@app.get("/api/jobs/history")
+async def get_user_job_history(
+    group_id: str,
+    user_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    limit: int = 5,
+) -> dict:
+    _require_api_token(request, authorization)
+    if not group_id.isdigit() or not user_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid group_id or user_id")
+    jobs = await asyncio.to_thread(_manager(request).list_user_history, group_id, user_id, limit)
+    return {"jobs": jobs}
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)

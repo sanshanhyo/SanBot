@@ -96,6 +96,18 @@ class BackendClient:
             raise BackendError("后端队列查询失败", "BACKEND_ADMIN_QUEUE_FAILED") from exc
         return response.json()
 
+    async def get_group_history(self, group_id: str, limit: int = 10) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                "/api/admin/history",
+                params={"group_id": group_id, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端群任务历史查询失败", "BACKEND_GROUP_HISTORY_FAILED") from exc
+        return response.json()
+
     async def cleanup_cache(self) -> dict[str, Any]:
         try:
             response = await self._client.post("/api/admin/cache/cleanup", headers=self._headers(), timeout=60.0)
@@ -146,6 +158,18 @@ class BackendClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise BackendError("后端查询当前任务失败", "BACKEND_GET_ACTIVE_JOB_FAILED") from exc
+        return response.json()
+
+    async def get_user_history(self, group_id: str, user_id: str, limit: int = 5) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                "/api/jobs/history",
+                params={"group_id": group_id, "user_id": user_id, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端查询任务历史失败", "BACKEND_USER_HISTORY_FAILED") from exc
         return response.json()
 
     async def cancel_active_job(self, group_id: str, user_id: str) -> dict[str, Any] | None:
