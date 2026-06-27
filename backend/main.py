@@ -103,7 +103,7 @@ class BackendSettings:
             bot_download_cache_ttl_seconds=max(0, _env_int("BOT_DOWNLOAD_CACHE_TTL_SECONDS", 259200)),
             preview_cache_ttl_seconds=max(0, _env_int("PREVIEW_CACHE_TTL_SECONDS", 86400)),
             backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
-            enable_search=_env_bool("ENABLE_SEARCH", False),
+            enable_search=_env_bool("ENABLE_SEARCH", True),
             search_timeout_seconds=max(1, _env_int("SEARCH_TIMEOUT_SECONDS", 20)),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", 5))),
             max_active_jobs_per_group=max(0, _env_int("MAX_ACTIVE_JOBS_PER_GROUP", 3)),

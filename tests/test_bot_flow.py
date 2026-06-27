@@ -161,7 +161,7 @@ class TaskCollector:
         awaitable.close()
 
 
-def _settings(tmp_path: Path, enable_search: bool = False) -> BotSettings:
+def _settings(tmp_path: Path, enable_search: bool = True) -> BotSettings:
     return BotSettings(
         bot_qq_id="12345",
         napcat_ws_url="ws://127.0.0.1:3001",
@@ -308,7 +308,7 @@ async def test_cover_url_failure_sends_cached_cover(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_search_command_is_disabled_by_default(tmp_path: Path) -> None:
+async def test_search_command_can_be_disabled_by_config(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
     state = BotState(pending_downloads={})
@@ -320,7 +320,7 @@ async def test_search_command_is_disabled_by_default(tmp_path: Path) -> None:
                 {"type": "text", "data": {"text": " 搜索 戦乙女"}},
             ]
         ),
-        _settings(tmp_path),
+        _settings(tmp_path, enable_search=False),
         state,
         napcat,  # type: ignore[arg-type]
         backend,  # type: ignore[arg-type]

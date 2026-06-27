@@ -85,7 +85,7 @@ BOT_LANG=zh_CN
 BOT_MANAGER_QQ_IDS=
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
-ENABLE_SEARCH=false
+ENABLE_SEARCH=true
 SEARCH_TIMEOUT_SECONDS=20
 SEARCH_RESULT_LIMIT=5
 SEARCH_CONFIRM_TIMEOUT_SECONDS=600
@@ -129,7 +129,7 @@ DATA_DIR=./data
 | `BOT_MANAGER_QQ_IDS` | 机器人管理者 QQ 号，多个用英文逗号分隔；管理者可执行清理缓存等维护命令 |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
-| `ENABLE_SEARCH` | 是否启用关键词搜索，默认 `false`；启用后 Bot 和后端都会处理搜索 |
+| `ENABLE_SEARCH` | 是否启用关键词搜索，默认 `true`；如需关闭可设为 `false` |
 | `SEARCH_TIMEOUT_SECONDS` | 后端搜索子进程超时时间，默认 `20` 秒 |
 | `SEARCH_RESULT_LIMIT` | 每次搜索返回结果数，默认 `5`，最大 `10` |
 | `SEARCH_CONFIRM_TIMEOUT_SECONDS` | 搜索结果出来后等待用户回复序号的时间，默认 `600` 秒 |
@@ -244,7 +244,7 @@ PDF 生成后会校验：
 @机器人 JM123456
 ```
 
-如果开启了 `ENABLE_SEARCH=true`，也可以搜索关键词：
+默认已开启关键词搜索，也可以搜索关键词：
 
 ```text
 @机器人 搜索 戦乙女
@@ -429,7 +429,7 @@ Invoke-RestMethod `
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/api/albums/{album_id}/preview` | 获取漫画封面、标题、页数和预计时间 |
-| `POST` | `/api/search` | 关键词搜索漫画，默认需要 `ENABLE_SEARCH=true` |
+| `POST` | `/api/search` | 关键词搜索漫画；如需关闭可设置 `ENABLE_SEARCH=false` |
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/active?group_id=...&user_id=...` | 查询某个群用户当前活跃任务 |
 | `POST` | `/api/jobs/active/cancel?group_id=...&user_id=...` | 取消某个群用户当前活跃任务 |

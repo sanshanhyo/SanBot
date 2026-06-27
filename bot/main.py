@@ -112,7 +112,7 @@ class BotSettings:
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     max_upload_filename_bytes: int = MAX_UPLOAD_FILENAME_BYTES
     upload_retries: int = DEFAULT_UPLOAD_RETRIES
-    enable_search: bool = False
+    enable_search: bool = True
     search_result_limit: int = DEFAULT_SEARCH_RESULT_LIMIT
     search_confirm_timeout_seconds: int = 600
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
@@ -145,7 +145,7 @@ class BotSettings:
                 _env_int("NAPCAT_MAX_UPLOAD_FILENAME_BYTES", MAX_UPLOAD_FILENAME_BYTES),
             ),
             upload_retries=max(1, _env_int("NAPCAT_UPLOAD_RETRIES", DEFAULT_UPLOAD_RETRIES)),
-            enable_search=_env_bool("ENABLE_SEARCH", False),
+            enable_search=_env_bool("ENABLE_SEARCH", True),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", DEFAULT_SEARCH_RESULT_LIMIT))),
             search_confirm_timeout_seconds=max(30, _env_int("SEARCH_CONFIRM_TIMEOUT_SECONDS", 600)),
             user_command_cooldown_seconds=max(
