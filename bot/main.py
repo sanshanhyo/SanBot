@@ -37,7 +37,7 @@ MAX_UPLOAD_FALLBACK_DEPTH = 1
 DEFAULT_UPLOAD_RETRIES = 5
 DEFAULT_SEARCH_RESULT_LIMIT = 5
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
-COVER_SEND_RETRIES = 3
+COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
 MAX_COVER_IMAGE_BYTES = 8 * 1024 * 1024
 GROUP_ADMIN_ROLES = {"owner", "admin"}
@@ -874,9 +874,6 @@ async def _send_album_preview(
     page_count = preview.get("page_count")
     page_count_is_estimated = bool(preview.get("page_count_is_estimated"))
 
-    if isinstance(cover_url, str) and cover_url:
-        await _send_album_cover(album_id, group_id, cover_url, settings, napcat)
-
     if isinstance(page_count, int) and page_count > 0:
         page_text = lang_text(
             "page_count_estimated" if page_count_is_estimated else "page_count_exact",
@@ -907,6 +904,11 @@ async def _send_album_preview(
         page_count=page_count if isinstance(page_count, int) and page_count > 0 else None,
         expires_at=asyncio.get_running_loop().time() + settings.confirm_timeout_seconds,
     )
+    if isinstance(cover_url, str) and cover_url:
+        asyncio.create_task(
+            _send_album_cover(album_id, group_id, cover_url, settings, napcat),
+            name=f"album-cover-{album_id}",
+        )
 
 
 def _needs_large_album_confirmation(page_count: object, settings: BotSettings) -> bool:

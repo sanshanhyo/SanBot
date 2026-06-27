@@ -443,9 +443,10 @@ async def test_handle_group_message_sends_preview_without_creating_job(tmp_path:
     assert backend.created == []
     assert tasks.count == 0
     assert napcat.sent[0] == ("10001", "我已经接收到 JM123456，正在用全力获取信息中(绝对没有偷懒！)...")
-    assert napcat.sent[1] == ("10001", "IMAGE:https://example.test/cover.jpg")
-    assert "标题是A Test Album" in napcat.sent[2][1]
+    assert "标题是A Test Album" in napcat.sent[1][1]
     assert ("10001", "20001") in state.pending_downloads
+    await asyncio.sleep(0)
+    assert napcat.sent[2] == ("10001", "IMAGE:https://example.test/cover.jpg")
 
 
 @pytest.mark.asyncio
@@ -476,10 +477,54 @@ async def test_cover_url_failure_sends_cached_cover(monkeypatch: pytest.MonkeyPa
         TaskCollector(),
     )
 
+    for _ in range(5):
+        await asyncio.sleep(0)
+
     assert napcat.image_attempts == 2
     expected_cover_path = tmp_path.resolve() / "cover_cache" / "JM123456.jpg"
-    assert napcat.sent[1] == ("10001", f"IMAGE:{expected_cover_path}")
-    assert "标题是A Test Album" in napcat.sent[2][1]
+    assert "标题是A Test Album" in napcat.sent[1][1]
+    assert napcat.sent[2] == ("10001", f"IMAGE:{expected_cover_path}")
+
+
+@pytest.mark.asyncio
+async def test_slow_cover_send_does_not_block_preview(tmp_path: Path) -> None:
+    class SlowImageNapCat(FakeNapCat):
+        def __init__(self) -> None:
+            super().__init__()
+            self.release_image = asyncio.Event()
+
+        async def send_group_image(self, group_id: str, image_url: str) -> dict:
+            self.image_attempts += 1
+            await self.release_image.wait()
+            self.sent.append((group_id, f"IMAGE:{image_url}"))
+            return {"status": "ok", "retcode": 0}
+
+    napcat = SlowImageNapCat()
+    backend = FakeCreateBackend()
+    state = BotState(pending_downloads={})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await asyncio.sleep(0)
+
+    assert napcat.image_attempts == 1
+    assert "标题是A Test Album" in napcat.sent[1][1]
+    assert len(napcat.sent) == 2
+
+    napcat.release_image.set()
+    await asyncio.sleep(0)
+    assert napcat.sent[-1] == ("10001", "IMAGE:https://example.test/cover.jpg")
 
 
 @pytest.mark.asyncio
@@ -548,10 +593,11 @@ async def test_search_result_selection_sends_album_preview(tmp_path: Path) -> No
     assert backend.previewed == ["111111"]
     assert state.pending_searches == {}
     assert ("10001", "20001") in state.pending_downloads
-    assert napcat.sent[-3] == ("10001", "已选择 JM111111，我先获取封面和页数给你确认。")
-    assert napcat.sent[-2] == ("10001", "IMAGE:https://example.test/cover.jpg")
+    assert napcat.sent[-2] == ("10001", "已选择 JM111111，我先获取封面和页数给你确认。")
     assert "标题是A Test Album" in napcat.sent[-1][1]
     assert tasks.count == 0
+    await asyncio.sleep(0)
+    assert napcat.sent[-1] == ("10001", "IMAGE:https://example.test/cover.jpg")
 
 
 @pytest.mark.asyncio
