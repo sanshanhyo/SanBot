@@ -18,10 +18,10 @@ download:
   image:
     decode: true
   threading:
-    # Increase carefully. Too high may trigger rate limits.
+    # Increase carefully. Too high may trigger rate limits or OOM on small servers.
     # You can also override these with JM_DOWNLOAD_IMAGE_THREADS and JM_DOWNLOAD_PHOTO_THREADS.
-    image: 20
-    photo: 4
+    image: 8
+    photo: 2
 
 dir_rule:
   base_dir: ./data/jmcomic

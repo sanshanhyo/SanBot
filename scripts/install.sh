@@ -581,8 +581,8 @@ main() {
   fi
 
   max_jobs="$(ask_numeric_default "最大同时下载任务数" "1")"
-  image_threads="$(ask_numeric_default "JM 图片下载线程数" "16")"
-  photo_threads="$(ask_numeric_default "JM 分册下载线程数" "4")"
+  image_threads="$(ask_numeric_default "JM 图片下载线程数" "8")"
+  photo_threads="$(ask_numeric_default "JM 分册下载线程数" "2")"
 
   if ask_yes_no "是否临时将 NapCat WebUI 绑定到公网 0.0.0.0？完成扫码后建议改回 127.0.0.1" "N"; then
     webui_bind="0.0.0.0"

@@ -10,7 +10,7 @@ import pytest
 
 from backend import downloader
 from backend.models import JobStatus
-from backend.task_manager import ActiveJobLimitError, JobManager, JobManagerConfig
+from backend.task_manager import ActiveJobLimitError, DownloadWorkerError, ErrorCode, JobManager, JobManagerConfig
 
 
 @pytest.mark.asyncio
@@ -587,8 +587,25 @@ def test_download_threading_env_override(monkeypatch: pytest.MonkeyPatch) -> Non
 
     downloader._set_download_threading(option)
 
-    assert option.download.threading.image == 16
-    assert option.download.threading.photo == 4
+    assert option.download.threading.image == 8
+    assert option.download.threading.photo == 2
+
+
+def test_download_worker_sigkill_reports_memory_hint(tmp_path: Path) -> None:
+    manager = JobManager(
+        JobManagerConfig(
+            data_dir=tmp_path / "data",
+            option_path=tmp_path / "jmcomic-option.yml",
+            max_concurrent_jobs=1,
+            job_timeout_seconds=5,
+        )
+    )
+
+    with pytest.raises(DownloadWorkerError) as exc_info:
+        manager._read_download_result(tmp_path / "missing-result.json", -9)
+
+    assert exc_info.value.error_code == ErrorCode.WORKER_OOM
+    assert "内存不足" in exc_info.value.user_message
 
 
 def test_download_threading_cap_can_be_raised(monkeypatch: pytest.MonkeyPatch) -> None:

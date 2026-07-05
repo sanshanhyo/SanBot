@@ -30,6 +30,7 @@ class ErrorCode:
     PDF_INVALID = "PDF_INVALID"
     PDF_OUTPUT_PATH_INVALID = "PDF_OUTPUT_PATH_INVALID"
     WORKER_EXITED = "WORKER_EXITED"
+    WORKER_OOM = "WORKER_OOM"
     WORKER_RESULT_INVALID = "WORKER_RESULT_INVALID"
     WORKER_UNEXPECTED = "WORKER_UNEXPECTED"
     JOB_UNEXPECTED = "JOB_UNEXPECTED"
@@ -797,6 +798,11 @@ class JobManager:
 
     def _read_download_result(self, result_path: Path, returncode: int | None) -> Path:
         if not result_path.is_file():
+            if returncode == -9:
+                raise DownloadWorkerError(
+                    "下载进程被系统强制终止，通常是服务器内存不足；请降低下载并发后重试",
+                    ErrorCode.WORKER_OOM,
+                )
             raise DownloadWorkerError(f"下载进程异常退出，退出码：{returncode}", ErrorCode.WORKER_EXITED)
 
         try:

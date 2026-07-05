@@ -20,8 +20,8 @@ COOKIE_LOG_RE = re.compile(
     r"(AVS['\"]?\s*:\s*['\"]?)([^'\"\]}]+)"
 )
 MAX_FILENAME_BYTES = 180
-DEFAULT_MAX_IMAGE_THREADS = 16
-DEFAULT_MAX_PHOTO_THREADS = 4
+DEFAULT_MAX_IMAGE_THREADS = 8
+DEFAULT_MAX_PHOTO_THREADS = 2
 
 
 class DownloaderError(Exception):
