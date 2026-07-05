@@ -191,3 +191,43 @@ def test_search_without_query_returns_usage_error() -> None:
 
     assert result.action == ParseAction.ERROR
     assert result.error_key == "search_usage"
+
+
+def test_parse_day_ranking_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 今日排行榜"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.RANKING
+    assert result.ranking_period == "day"
+
+
+def test_parse_week_ranking_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 周榜"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.RANKING
+    assert result.ranking_period == "week"
+
+
+def test_parse_month_ranking_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] 月榜"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.RANKING
+    assert result.ranking_period == "month"

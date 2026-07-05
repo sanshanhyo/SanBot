@@ -66,3 +66,18 @@ class AlbumSearchResponse(BaseModel):
     page: int
     total: int
     results: list[AlbumSearchItem]
+
+
+class AlbumRankingItem(BaseModel):
+    rank: int = Field(ge=1)
+    album_id: str = Field(pattern=r"^\d{1,12}$")
+    title: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class AlbumRankingResponse(BaseModel):
+    period: str = Field(pattern=r"^(day|week|month)$")
+    period_label: str
+    page: int
+    total: int
+    results: list[AlbumRankingItem]

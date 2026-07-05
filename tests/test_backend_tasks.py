@@ -657,6 +657,58 @@ def test_preview_page_count_falls_back_to_photo_details() -> None:
     assert client.requested == ["p1", "p2"]
 
 
+def test_preview_page_count_prefers_episode_sum_over_album_count() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        def get_photo_detail(self, photo_id: str, fetch_album: bool = False) -> SimpleNamespace:
+            self.requested.append(photo_id)
+            return SimpleNamespace(page_arr=["1.jpg"] * 165)
+
+    album = SimpleNamespace(
+        page_count=165,
+        episode_list=[
+            ("p1", "1", "chapter 1"),
+            ("p2", "2", "chapter 2"),
+            ("p3", "3", "chapter 3"),
+            ("p4", "4", "chapter 4"),
+        ],
+    )
+    client = FakeClient()
+
+    page_count, is_estimated = downloader._resolve_preview_page_count(client, album, stop_after=301)
+
+    assert page_count == 330
+    assert is_estimated is True
+    assert client.requested == ["p1", "p2"]
+
+
+def test_preview_page_count_sums_all_episode_details_when_under_limit() -> None:
+    class FakeClient:
+        def get_photo_detail(self, photo_id: str, fetch_album: bool = False) -> SimpleNamespace:
+            pages = {
+                "p1": ["1.jpg"] * 80,
+                "p2": ["1.jpg"] * 30,
+                "p3": ["1.jpg"] * 20,
+            }[photo_id]
+            return SimpleNamespace(page_arr=pages)
+
+    album = SimpleNamespace(
+        page_count=10,
+        episode_list=[
+            {"photo_id": "p1"},
+            SimpleNamespace(id="p2"),
+            ("p3", "3", "chapter 3"),
+        ],
+    )
+
+    page_count, is_estimated = downloader._resolve_preview_page_count(FakeClient(), album, stop_after=301)
+
+    assert page_count == 130
+    assert is_estimated is False
+
+
 def test_console_progress_bar_with_total(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     manager = JobManager(
         JobManagerConfig(
@@ -752,6 +804,30 @@ def test_search_page_to_result_filters_and_limits() -> None:
         "results": [
             {"album_id": "123456", "title": "First", "tags": ["a", "b"]},
             {"album_id": "222222", "title": "Second", "tags": ["x"] * 8},
+        ],
+    }
+
+
+def test_ranking_page_to_result_adds_rank_and_limits() -> None:
+    page = SimpleNamespace(
+        total="3",
+        content=[
+            ("123456", {"name": "First"}),
+            ("222222", {"title": "Second"}),
+            ("bad-id", {"name": "Bad"}),
+        ],
+    )
+
+    result = downloader._ranking_page_to_result("day", 1, page, limit=2)
+
+    assert result == {
+        "period": "day",
+        "period_label": "日榜",
+        "page": 1,
+        "total": 3,
+        "results": [
+            {"rank": 1, "album_id": "123456", "title": "First", "tags": []},
+            {"rank": 2, "album_id": "222222", "title": "Second", "tags": []},
         ],
     }
 

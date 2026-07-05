@@ -15,10 +15,18 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
-from .models import AlbumPreviewResponse, AlbumSearchRequest, AlbumSearchResponse, JobCreate, JobCreateResponse, JobResponse
+from .models import (
+    AlbumPreviewResponse,
+    AlbumRankingResponse,
+    AlbumSearchRequest,
+    AlbumSearchResponse,
+    JobCreate,
+    JobCreateResponse,
+    JobResponse,
+)
 from .task_manager import ActiveJobLimitError, DuplicateJobError, JobManager, JobManagerConfig
 
 logger = logging.getLogger(__name__)
@@ -84,8 +92,11 @@ class BackendSettings:
     enable_search: bool
     search_timeout_seconds: int
     search_result_limit: int
+    ranking_timeout_seconds: int
+    ranking_result_limit: int
     max_active_jobs_per_group: int
     max_active_jobs_per_user: int
+    max_album_pages: int
 
     @classmethod
     def from_env(cls) -> "BackendSettings":
@@ -106,8 +117,11 @@ class BackendSettings:
             enable_search=_env_bool("ENABLE_SEARCH", True),
             search_timeout_seconds=max(1, _env_int("SEARCH_TIMEOUT_SECONDS", 20)),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", 5))),
+            ranking_timeout_seconds=max(1, _env_int("RANKING_TIMEOUT_SECONDS", 20)),
+            ranking_result_limit=max(1, min(20, _env_int("RANKING_RESULT_LIMIT", 10))),
             max_active_jobs_per_group=max(0, _env_int("MAX_ACTIVE_JOBS_PER_GROUP", 3)),
             max_active_jobs_per_user=max(0, _env_int("MAX_ACTIVE_JOBS_PER_USER", 1)),
+            max_album_pages=max(0, _env_int("MAX_ALBUM_PAGES", 300)),
         )
 
 
@@ -171,6 +185,21 @@ async def create_job(
     authorization: str | None = Header(default=None),
 ) -> JobCreateResponse:
     _require_api_token(request, authorization)
+    settings: BackendSettings = request.app.state.settings
+    if (
+        settings.max_album_pages > 0
+        and payload.page_count is not None
+        and payload.page_count > settings.max_album_pages
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": f"JM{payload.album_id} 页数超过上限 {settings.max_album_pages}，已拒绝加入队列",
+                "error_code": "ALBUM_TOO_LARGE",
+                "page_count": payload.page_count,
+                "limit": settings.max_album_pages,
+            },
+        )
     try:
         job = await _manager(request).create_job(payload.album_id, payload.group_id, payload.user_id, payload.page_count)
     except DuplicateJobError as exc:
@@ -202,6 +231,12 @@ class PreviewWorkerError(Exception):
 
 
 class SearchWorkerError(Exception):
+    def __init__(self, user_message: str) -> None:
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
+class RankingWorkerError(Exception):
     def __init__(self, user_message: str) -> None:
         super().__init__(user_message)
         self.user_message = user_message
@@ -272,6 +307,43 @@ async def search_albums(
         result_path.unlink(missing_ok=True)
 
     return AlbumSearchResponse(**result)
+
+
+@app.get("/api/rankings/{period}", response_model=AlbumRankingResponse)
+async def get_album_ranking(
+    period: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, le=5),
+    limit: int = Query(default=10, ge=1, le=20),
+    authorization: str | None = Header(default=None),
+) -> AlbumRankingResponse:
+    _require_api_token(request, authorization)
+    if period not in {"day", "week", "month"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid ranking period")
+
+    settings: BackendSettings = request.app.state.settings
+    result_path = settings.data_dir.resolve() / "rankings" / f"{uuid.uuid4()}.json"
+    limit = min(limit, settings.ranking_result_limit)
+    try:
+        result = await _run_ranking_worker(
+            period,
+            page,
+            limit,
+            settings.jmcomic_option_path,
+            result_path,
+            settings.ranking_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="排行榜获取超时，请稍后重试",
+        ) from exc
+    except RankingWorkerError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.user_message) from exc
+    finally:
+        result_path.unlink(missing_ok=True)
+
+    return AlbumRankingResponse(**result)
 
 
 async def _run_preview_worker(
@@ -378,6 +450,62 @@ async def _run_search_worker(
     if not isinstance(search_result, dict):
         raise SearchWorkerError("搜索结果无效")
     return search_result
+
+
+async def _run_ranking_worker(
+    period: str,
+    page: int,
+    limit: int,
+    option_path: Path,
+    result_path: Path,
+    timeout_seconds: int,
+) -> dict:
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "backend.ranking_worker",
+        "--period",
+        period,
+        "--page",
+        str(page),
+        "--limit",
+        str(limit),
+        "--option-path",
+        str(option_path),
+        "--result-path",
+        str(result_path),
+    ]
+    kwargs: dict[str, object] = {
+        "stdout": asyncio.subprocess.DEVNULL,
+        "stderr": asyncio.subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+
+    process = await asyncio.create_subprocess_exec(*command, **kwargs)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        await _terminate_process(process)
+        raise
+
+    if not result_path.is_file():
+        raise RankingWorkerError(f"排行榜获取失败，退出码：{process.returncode}")
+
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RankingWorkerError("排行榜结果无效") from exc
+
+    if not result.get("ok"):
+        raise RankingWorkerError(result.get("user_message") or "排行榜获取失败，请稍后重试")
+    ranking_result = result.get("result")
+    if not isinstance(ranking_result, dict):
+        raise RankingWorkerError("排行榜结果无效")
+    return ranking_result
 
 
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:

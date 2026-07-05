@@ -45,6 +45,7 @@ class FakeCreateBackend:
         self.created: list[tuple[str, str, str, int | None]] = []
         self.previewed: list[str] = []
         self.searches: list[tuple[str, int, int]] = []
+        self.rankings: list[tuple[str, int, int]] = []
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -80,6 +81,19 @@ class FakeCreateBackend:
             "results": [
                 {"album_id": "111111", "title": "First Search Hit", "tags": ["tag1"]},
                 {"album_id": "222222", "title": "Second Search Hit", "tags": ["tag2"]},
+            ],
+        }
+
+    async def get_ranking(self, period: str, page: int = 1, limit: int = 10) -> dict:
+        self.rankings.append((period, page, limit))
+        return {
+            "period": period,
+            "period_label": {"day": "日榜", "week": "周榜", "month": "月榜"}[period],
+            "page": page,
+            "total": 2,
+            "results": [
+                {"rank": 1, "album_id": "111111", "title": "First Ranking Hit", "tags": []},
+                {"rank": 2, "album_id": "222222", "title": "Second Ranking Hit", "tags": []},
             ],
         }
 
@@ -419,6 +433,32 @@ async def test_group_admin_can_query_group_history(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ranking_command_sends_ranking_results(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 今日排行榜"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.rankings == [("day", 1, 10)]
+    assert napcat.sent[0] == ("10001", "正在获取 JM 日榜，稍等一下下……")
+    assert "JM 日榜 Top 榜" in napcat.sent[1][1]
+    assert "1. JM111111 First Ranking Hit" in napcat.sent[1][1]
+    assert "2. JM222222 Second Ranking Hit" in napcat.sent[1][1]
+
+
+@pytest.mark.asyncio
 async def test_handle_group_message_sends_preview_without_creating_job(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
@@ -447,6 +487,37 @@ async def test_handle_group_message_sends_preview_without_creating_job(tmp_path:
     assert ("10001", "20001") in state.pending_downloads
     await asyncio.sleep(0)
     assert napcat.sent[2] == ("10001", "IMAGE:https://example.test/cover.jpg")
+
+
+@pytest.mark.asyncio
+async def test_oversized_album_is_rejected_before_pending_download(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend(page_count=301)
+    tasks = TaskCollector()
+    state = BotState(pending_downloads={})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    assert backend.previewed == ["123456"]
+    assert backend.created == []
+    assert tasks.count == 0
+    assert state.pending_downloads == {}
+    assert "已自动拒绝加入队列" in napcat.sent[-1][1]
+    assert "当前上限：300 页" in napcat.sent[-1][1]
+    await asyncio.sleep(0)
+    assert all(message != "IMAGE:https://example.test/cover.jpg" for _group, message in napcat.sent)
 
 
 @pytest.mark.asyncio

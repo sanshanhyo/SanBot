@@ -310,6 +310,8 @@ write_env_file() {
   write_env_line "$env_file" "SEARCH_TIMEOUT_SECONDS" "20"
   write_env_line "$env_file" "SEARCH_RESULT_LIMIT" "5"
   write_env_line "$env_file" "SEARCH_CONFIRM_TIMEOUT_SECONDS" "600"
+  write_env_line "$env_file" "RANKING_TIMEOUT_SECONDS" "20"
+  write_env_line "$env_file" "RANKING_RESULT_LIMIT" "10"
 
   write_env_line "$env_file" "MAX_CONCURRENT_JOBS" "$max_jobs"
   write_env_line "$env_file" "MAX_ACTIVE_JOBS_PER_GROUP" "3"
@@ -321,6 +323,7 @@ write_env_file() {
   write_env_line "$env_file" "JOB_CONFIRM_TIMEOUT_SECONDS" "600"
   write_env_line "$env_file" "USER_COMMAND_COOLDOWN_SECONDS" "10"
   write_env_line "$env_file" "LARGE_ALBUM_WARNING_PAGES" "100"
+  write_env_line "$env_file" "MAX_ALBUM_PAGES" "300"
 
   write_env_line "$env_file" "CACHE_CLEANUP_INTERVAL_SECONDS" "3600"
   write_env_line "$env_file" "JOB_CACHE_TTL_SECONDS" "259200"

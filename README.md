@@ -94,6 +94,8 @@ ENABLE_SEARCH=true
 SEARCH_TIMEOUT_SECONDS=20
 SEARCH_RESULT_LIMIT=5
 SEARCH_CONFIRM_TIMEOUT_SECONDS=600
+RANKING_TIMEOUT_SECONDS=20
+RANKING_RESULT_LIMIT=10
 MAX_CONCURRENT_JOBS=1
 MAX_ACTIVE_JOBS_PER_GROUP=3
 MAX_ACTIVE_JOBS_PER_USER=1
@@ -105,6 +107,7 @@ JOB_PROGRESS_NOTIFY_SECONDS=300
 JOB_CONFIRM_TIMEOUT_SECONDS=600
 USER_COMMAND_COOLDOWN_SECONDS=10
 LARGE_ALBUM_WARNING_PAGES=100
+MAX_ALBUM_PAGES=300
 CACHE_CLEANUP_INTERVAL_SECONDS=3600
 JOB_CACHE_TTL_SECONDS=259200
 BOT_DOWNLOAD_CACHE_TTL_SECONDS=259200
@@ -141,6 +144,8 @@ DATA_DIR=./data
 | `SEARCH_TIMEOUT_SECONDS` | 后端搜索子进程超时时间，默认 `20` 秒 |
 | `SEARCH_RESULT_LIMIT` | 每次搜索返回结果数，默认 `5`，最大 `10` |
 | `SEARCH_CONFIRM_TIMEOUT_SECONDS` | 搜索结果出来后等待用户回复序号的时间，默认 `600` 秒 |
+| `RANKING_TIMEOUT_SECONDS` | 后端排行榜子进程超时时间，默认 `20` 秒 |
+| `RANKING_RESULT_LIMIT` | 每次排行榜返回结果数，默认 `10`，最大 `20` |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `MAX_ACTIVE_JOBS_PER_GROUP` | 每个群允许同时存在的活跃任务数，默认 `3` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 每个用户允许同时存在的活跃任务数，默认 `1` |
@@ -152,6 +157,7 @@ DATA_DIR=./data
 | `JOB_CONFIRM_TIMEOUT_SECONDS` | 预览后等待用户确认的时间，默认 `600` 秒 |
 | `USER_COMMAND_COOLDOWN_SECONDS` | 同一群同一用户发送新任务或搜索命令的冷却时间，默认 `10` 秒 |
 | `LARGE_ALBUM_WARNING_PAGES` | 超过多少页触发二次确认，默认 `100`；设为 `0` 可关闭 |
+| `MAX_ALBUM_PAGES` | 超过多少页自动拒绝加入下载队列，默认 `300`；设为 `0` 可关闭 |
 | `CACHE_CLEANUP_INTERVAL_SECONDS` | 后端缓存清理间隔，默认 `3600` 秒；设为 `0` 可关闭 |
 | `JOB_CACHE_TTL_SECONDS` | 已完成/已失败任务目录保留时间，默认 `259200` 秒，即 3 天 |
 | `BOT_DOWNLOAD_CACHE_TTL_SECONDS` | Bot 下载到本地准备上传的 PDF 缓存保留时间，默认 3 天 |
@@ -253,6 +259,9 @@ PDF 生成后会校验：
 @机器人 帮助
 @机器人 功能
 @机器人 JM123456
+@机器人 今日排行榜
+@机器人 周榜
+@机器人 月榜
 @机器人 我的任务
 ```
 
@@ -265,6 +274,15 @@ PDF 生成后会校验：
 ```
 
 机器人会返回最多 `SEARCH_RESULT_LIMIT` 条结果。用户回复序号后，机器人会继续发送封面、标题、页数和预计时间，并询问是否下载；不会直接加入下载队列。
+
+排行榜查询不会加入下载队列，只返回文字列表：
+
+```text
+@机器人 今日排行榜
+@机器人 日榜
+@机器人 周榜
+@机器人 月榜
+```
 
 输入了无法识别的内容时，机器人会回复：
 
@@ -279,6 +297,7 @@ PDF 生成后会校验：
 ```
 
 如果页数超过 `LARGE_ALBUM_WARNING_PAGES`，机器人会先发送警告，用户需要再次回复“下载”才会加入队列。
+如果页数超过 `MAX_ALBUM_PAGES`，机器人会自动拒绝该任务，避免超大本子拖垮下载、转换和上传流程。
 
 确认后，机器人会加入下载队列并回复：
 

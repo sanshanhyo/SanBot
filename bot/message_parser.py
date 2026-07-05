@@ -7,6 +7,21 @@ from typing import Any
 
 ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
 SEARCH_PATTERN = re.compile(r"^\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
+RANKING_ALIASES = {
+    "日榜": "day",
+    "今日榜": "day",
+    "今日排行榜": "day",
+    "今天榜": "day",
+    "今天排行榜": "day",
+    "周榜": "week",
+    "本周榜": "week",
+    "本周排行榜": "week",
+    "周排行榜": "week",
+    "月榜": "month",
+    "本月榜": "month",
+    "本月排行榜": "month",
+    "月排行榜": "month",
+}
 CQ_CODE_PATTERN = re.compile(r"\[CQ:([a-zA-Z0-9_]+)((?:,[^\]]*)?)\]")
 
 
@@ -20,6 +35,7 @@ class ParseAction(StrEnum):
     USAGE = "usage"
     OK = "ok"
     SEARCH = "search"
+    RANKING = "ranking"
     ERROR = "error"
 
 
@@ -28,6 +44,7 @@ class ParseResult:
     action: ParseAction
     album_id: str | None = None
     search_query: str | None = None
+    ranking_period: str | None = None
     error_key: str | None = None
 
 
@@ -123,6 +140,18 @@ def extract_search_query(message_segments: Any) -> tuple[str | None, str | None]
     return query, None
 
 
+def extract_ranking_period(message_segments: Any) -> str | None:
+    text = re.sub(r"\s+", "", text_from_segments(message_segments)).strip()
+    lowered = text.lower()
+    if lowered in {"dayranking", "dailyranking"}:
+        return "day"
+    if lowered in {"weekranking", "weeklyranking"}:
+        return "week"
+    if lowered in {"monthranking", "monthlyranking"}:
+        return "month"
+    return RANKING_ALIASES.get(text)
+
+
 def extract_control_action(message_segments: Any) -> ParseAction | None:
     text = re.sub(r"\s+", " ", text_from_segments(message_segments)).strip()
     if not text:
@@ -156,6 +185,10 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
         return ParseResult(ParseAction.ERROR, error_key=search_error)
     if search_query is not None:
         return ParseResult(ParseAction.SEARCH, search_query=search_query)
+
+    ranking_period = extract_ranking_period(message_segments)
+    if ranking_period is not None:
+        return ParseResult(ParseAction.RANKING, ranking_period=ranking_period)
 
     control_action = extract_control_action(message_segments)
     if control_action is not None:

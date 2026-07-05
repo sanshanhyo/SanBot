@@ -36,6 +36,7 @@ MAX_UPLOAD_FILENAME_BYTES = 96
 MAX_UPLOAD_FALLBACK_DEPTH = 1
 DEFAULT_UPLOAD_RETRIES = 5
 DEFAULT_SEARCH_RESULT_LIMIT = 5
+DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
 COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
@@ -107,6 +108,7 @@ class BotSettings:
     progress_notify_seconds: int = 300
     confirm_timeout_seconds: int = 600
     large_album_warning_pages: int = 100
+    max_album_pages: int = 300
     napcat_http_timeout_seconds: int = 60
     napcat_upload_timeout_seconds: int = 900
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
@@ -115,6 +117,7 @@ class BotSettings:
     enable_search: bool = True
     search_result_limit: int = DEFAULT_SEARCH_RESULT_LIMIT
     search_confirm_timeout_seconds: int = 600
+    ranking_result_limit: int = DEFAULT_RANKING_RESULT_LIMIT
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
     manager_qq_ids: set[str] = field(default_factory=set)
     bot_display_name: str = "SanBot"
@@ -142,6 +145,7 @@ class BotSettings:
             progress_notify_seconds=max(0, _env_int("JOB_PROGRESS_NOTIFY_SECONDS", 300)),
             confirm_timeout_seconds=max(30, _env_int("JOB_CONFIRM_TIMEOUT_SECONDS", 600)),
             large_album_warning_pages=max(0, _env_int("LARGE_ALBUM_WARNING_PAGES", 100)),
+            max_album_pages=max(0, _env_int("MAX_ALBUM_PAGES", 300)),
             napcat_http_timeout_seconds=max(1, _env_int("NAPCAT_HTTP_TIMEOUT_SECONDS", 60)),
             napcat_upload_timeout_seconds=max(60, _env_int("NAPCAT_UPLOAD_TIMEOUT_SECONDS", 900)),
             max_upload_bytes=max(0, _env_int("NAPCAT_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)),
@@ -153,6 +157,7 @@ class BotSettings:
             enable_search=_env_bool("ENABLE_SEARCH", True),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", DEFAULT_SEARCH_RESULT_LIMIT))),
             search_confirm_timeout_seconds=max(30, _env_int("SEARCH_CONFIRM_TIMEOUT_SECONDS", 600)),
+            ranking_result_limit=max(1, min(20, _env_int("RANKING_RESULT_LIMIT", DEFAULT_RANKING_RESULT_LIMIT))),
             user_command_cooldown_seconds=max(
                 0,
                 _env_int("USER_COMMAND_COOLDOWN_SECONDS", DEFAULT_USER_COMMAND_COOLDOWN_SECONDS),
@@ -353,10 +358,11 @@ async def handle_group_message(
         return
 
     logger.info(
-        "Parsed group command action=%s album_id=%s search_query=%s group_id=%s user_id=%s",
+        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s group_id=%s user_id=%s",
         parse_result.action,
         parse_result.album_id,
         parse_result.search_query,
+        parse_result.ranking_period,
         group_id,
         user_id,
     )
@@ -392,7 +398,7 @@ async def handle_group_message(
         await _send_group_history(group_id, napcat, backend)
         return
 
-    if parse_result.action in {ParseAction.OK, ParseAction.SEARCH}:
+    if parse_result.action in {ParseAction.OK, ParseAction.SEARCH, ParseAction.RANKING}:
         remaining = _command_cooldown_remaining(group_id, user_id, settings, state, now)
         if remaining > 0:
             await _safe_send(napcat, group_id, lang_text("command_cooldown", seconds=math.ceil(remaining)))
@@ -406,6 +412,16 @@ async def handle_group_message(
             user_id,
             settings,
             state,
+            napcat,
+            backend,
+        )
+        return
+
+    if parse_result.action == ParseAction.RANKING:
+        await _handle_ranking_command(
+            parse_result.ranking_period or "day",
+            group_id,
+            settings,
             napcat,
             backend,
         )
@@ -822,6 +838,38 @@ async def _handle_search_command(
     await _safe_send(napcat, group_id, _format_search_results(query, safe_results))
 
 
+async def _handle_ranking_command(
+    period: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    await _safe_send(napcat, group_id, lang_text("ranking_fetching", period=_ranking_period_label(period)))
+    try:
+        payload = await backend.get_ranking(period, page=1, limit=settings.ranking_result_limit)
+    except BackendError as exc:
+        logger.exception("Could not fetch %s ranking for group=%s.", period, group_id)
+        await _safe_send(napcat, group_id, lang_text("ranking_failed", error=exc, error_code=exc.error_code))
+        return
+
+    results = payload.get("results")
+    if not isinstance(results, list) or not results:
+        await _safe_send(napcat, group_id, lang_text("ranking_empty", period=_ranking_period_label(period)))
+        return
+
+    safe_results = [
+        result
+        for result in results[: settings.ranking_result_limit]
+        if isinstance(result, dict) and str(result.get("album_id") or "").isdigit()
+    ]
+    if not safe_results:
+        await _safe_send(napcat, group_id, lang_text("ranking_empty", period=_ranking_period_label(period)))
+        return
+
+    await _safe_send(napcat, group_id, _format_ranking_results(payload, safe_results))
+
+
 async def _handle_active_cancel(
     event: dict[str, Any],
     group_id: str,
@@ -881,6 +929,21 @@ async def _send_album_preview(
         )
     else:
         page_text = lang_text("page_count_unknown")
+
+    if _is_album_too_large(page_count, settings):
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text(
+                "album_too_large",
+                album_id=album_id,
+                title=title,
+                page_text=page_text,
+                limit=settings.max_album_pages,
+            ),
+        )
+        return
+
     extra_warning = ""
     if _needs_large_album_confirmation(page_count, settings):
         extra_warning = lang_text("large_album_hint", limit=settings.large_album_warning_pages)
@@ -919,6 +982,10 @@ def _needs_large_album_confirmation(page_count: object, settings: BotSettings) -
     )
 
 
+def _is_album_too_large(page_count: object, settings: BotSettings) -> bool:
+    return settings.max_album_pages > 0 and isinstance(page_count, int) and page_count > settings.max_album_pages
+
+
 def _format_search_results(query: str, results: list[dict[str, Any]]) -> str:
     lines = [lang_text("search_results_header", query=query)]
     for index, result in enumerate(results, start=1):
@@ -926,6 +993,30 @@ def _format_search_results(query: str, results: list[dict[str, Any]]) -> str:
         title = _truncate_display_text(str(result.get("title") or f"JM{album_id}"), 46)
         lines.append(lang_text("search_result_line", index=index, album_id=album_id, title=title))
     lines.append(lang_text("search_results_footer", count=len(results)))
+    return "\n".join(lines)
+
+
+def _ranking_period_label(period: str) -> str:
+    return {
+        "day": "日榜",
+        "week": "周榜",
+        "month": "月榜",
+    }.get(period, "排行榜")
+
+
+def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    period = str(payload.get("period") or "")
+    label = str(payload.get("period_label") or _ranking_period_label(period))
+    lines = [lang_text("ranking_results_header", period=label)]
+    for index, result in enumerate(results, start=1):
+        try:
+            rank = int(result.get("rank"))
+        except (TypeError, ValueError):
+            rank = index
+        album_id = str(result.get("album_id") or "")
+        title = _truncate_display_text(str(result.get("title") or f"JM{album_id}"), 46)
+        lines.append(lang_text("ranking_result_line", rank=rank, album_id=album_id, title=title))
+    lines.append(lang_text("ranking_results_footer"))
     return "\n".join(lines)
 
 

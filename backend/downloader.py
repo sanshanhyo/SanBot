@@ -52,6 +52,10 @@ class SearchError(DownloaderError):
     pass
 
 
+class RankingError(DownloaderError):
+    pass
+
+
 def _truncate_utf8(text: str, max_bytes: int) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
@@ -124,36 +128,74 @@ def _positive_int_or_none(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _preview_page_count_stop_after() -> int:
-    return (_env_positive_int("LARGE_ALBUM_WARNING_PAGES") or 100) + 1
+def _preview_page_count_stop_after() -> int | None:
+    max_album_pages = _env_positive_int("MAX_ALBUM_PAGES")
+    if max_album_pages is None:
+        return None
+    return max_album_pages + 1
 
 
 def _episode_ids(album: object) -> list[str]:
     episode_list = getattr(album, "episode_list", None)
+    seen: set[str] = set()
     ids: list[str] = []
-    if isinstance(episode_list, list):
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        item = str(value).strip()
+        if not item or item in seen:
+            return
+        seen.add(item)
+        ids.append(item)
+
+    if isinstance(episode_list, (list, tuple)):
         for episode in episode_list:
             if isinstance(episode, (tuple, list)) and episode:
-                ids.append(str(episode[0]))
+                add(episode[0])
+            elif isinstance(episode, dict):
+                for key in ("photo_id", "id", "album_id", "episode_id"):
+                    if key in episode:
+                        add(episode.get(key))
+                        break
+            elif isinstance(episode, (str, int)):
+                add(episode)
+            else:
+                for attr in ("photo_id", "id", "album_id", "episode_id"):
+                    value = getattr(episode, attr, None)
+                    if value is not None:
+                        add(value)
+                        break
 
     if ids:
         return ids
 
-    album_id = getattr(album, "album_id", None) or getattr(album, "id", None)
-    return [str(album_id)] if album_id else []
+    album_id = getattr(album, "album_id", None) or getattr(album, "id", None) or getattr(album, "photo_id", None)
+    add(album_id)
+    return ids
 
 
 def _photo_page_count(photo: object) -> int | None:
-    page_arr = getattr(photo, "page_arr", None)
-    if isinstance(page_arr, list):
-        count = len(page_arr)
-        return count if count > 0 else None
+    candidates: list[int] = []
+    for attr in ("page_count", "total_page", "total_pages"):
+        count = _positive_int_or_none(getattr(photo, attr, None))
+        if count is not None:
+            candidates.append(count)
+
+    for attr in ("page_arr", "pages", "image_list"):
+        pages = getattr(photo, attr, None)
+        if isinstance(pages, (list, tuple)):
+            count = len(pages)
+            if count > 0:
+                candidates.append(count)
 
     try:
         count = len(photo)  # type: ignore[arg-type]
     except (TypeError, AttributeError):
-        return None
-    return count if count > 0 else None
+        count = 0
+    if count > 0:
+        candidates.append(count)
+    return max(candidates) if candidates else None
 
 
 def _resolve_preview_page_count(
@@ -161,27 +203,32 @@ def _resolve_preview_page_count(
     album: object,
     stop_after: int | None = None,
 ) -> tuple[int | None, bool]:
-    page_count = _positive_int_or_none(getattr(album, "page_count", None))
-    if page_count is not None:
-        return page_count, False
-
+    album_page_count = _positive_int_or_none(getattr(album, "page_count", None))
     total = 0
     found_any = False
+    had_missing_detail = False
     for photo_id in _episode_ids(album):
         try:
             photo = client.get_photo_detail(photo_id, fetch_album=False)
         except Exception:
             logger.debug("Could not fetch photo detail for preview page count: %s", photo_id, exc_info=True)
+            had_missing_detail = True
             continue
         count = _photo_page_count(photo)
         if count is None:
+            had_missing_detail = True
             continue
         found_any = True
         total += count
         if stop_after is not None and total >= stop_after:
             return total, True
 
-    return (total if found_any else None), False
+    if found_any:
+        if had_missing_detail:
+            return max(total, album_page_count or 0), True
+        return total, False
+
+    return album_page_count, False
 
 
 def _looks_like_missing_album(exc: Exception) -> bool:
@@ -478,9 +525,15 @@ def _normalize_search_query(query: str) -> str:
     return normalized
 
 
-def _search_page_to_result(query: str, page: int, search_page: object, limit: int) -> dict:
+def _page_to_album_items(
+    page_obj: object,
+    limit: int,
+    *,
+    rank_offset: int = 0,
+    include_rank: bool = False,
+) -> tuple[list[dict[str, object]], int]:
     results: list[dict[str, object]] = []
-    content = getattr(search_page, "content", [])
+    content = getattr(page_obj, "content", [])
     if not isinstance(content, list):
         content = []
 
@@ -495,19 +548,27 @@ def _search_page_to_result(query: str, page: int, search_page: object, limit: in
         title = str(info.get("name") or info.get("title") or f"JM{album_id}")
         raw_tags = info.get("tags")
         tags = [str(tag) for tag in raw_tags[:8]] if isinstance(raw_tags, list) else []
-        results.append({"album_id": album_id, "title": title, "tags": tags})
+        result: dict[str, object] = {"album_id": album_id, "title": title, "tags": tags}
+        if include_rank:
+            result["rank"] = rank_offset + len(results) + 1
+        results.append(result)
         if len(results) >= limit:
             break
 
     try:
-        total = int(getattr(search_page, "total", len(results)) or 0)
+        total = int(getattr(page_obj, "total", len(results)) or 0)
     except (TypeError, ValueError):
         total = len(results)
 
+    return results, max(total, len(results))
+
+
+def _search_page_to_result(query: str, page: int, search_page: object, limit: int) -> dict:
+    results, total = _page_to_album_items(search_page, limit)
     return {
         "query": query,
         "page": page,
-        "total": max(total, len(results)),
+        "total": total,
         "results": results,
     }
 
@@ -541,6 +602,67 @@ def search_albums(query: str, option_path: str | Path, page: int = 1, limit: int
         raise SearchError(_download_error_message(exc)) from exc
 
     return _search_page_to_result(query, page, search_page, limit)
+
+
+RANKING_LABELS = {
+    "day": "日榜",
+    "week": "周榜",
+    "month": "月榜",
+}
+
+
+def _normalize_ranking_period(period: str) -> str:
+    normalized = period.strip().lower()
+    if normalized not in RANKING_LABELS:
+        raise RankingError("排行榜类型无效，仅支持日榜、周榜、月榜")
+    return normalized
+
+
+def _ranking_page_to_result(period: str, page: int, ranking_page: object, limit: int) -> dict:
+    results, total = _page_to_album_items(ranking_page, limit, rank_offset=(page - 1) * limit, include_rank=True)
+    return {
+        "period": period,
+        "period_label": RANKING_LABELS[period],
+        "page": page,
+        "total": total,
+        "results": results,
+    }
+
+
+def fetch_album_ranking(period: str, option_path: str | Path, page: int = 1, limit: int = 10) -> dict:
+    period = _normalize_ranking_period(period)
+    page = max(1, min(int(page), 5))
+    limit = max(1, min(int(limit), 20))
+
+    option_file = Path(option_path).expanduser().resolve()
+    if not option_file.is_file():
+        raise RankingError("JMComic 配置文件不存在，请检查 JMCOMIC_OPTION_PATH")
+
+    try:
+        from jmcomic import create_option_by_file
+    except ImportError as exc:
+        raise RankingError("未安装 jmcomic，请先安装项目依赖") from exc
+
+    method_name = {
+        "day": "day_ranking",
+        "week": "week_ranking",
+        "month": "month_ranking",
+    }[period]
+    stdout = StringIO()
+    stderr = StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            option = create_option_by_file(str(option_file))
+            client = option.new_jm_client()
+            ranking_page = getattr(client, method_name)(page=page)
+        _log_captured_jmcomic_output(stdout, stderr)
+    except DownloaderError:
+        raise
+    except Exception as exc:
+        _log_captured_jmcomic_output(stdout, stderr)
+        raise RankingError(_download_error_message(exc)) from exc
+
+    return _ranking_page_to_result(period, page, ranking_page, limit)
 
 
 def fetch_album_preview(album_id: str, option_path: str | Path) -> dict:

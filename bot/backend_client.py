@@ -70,6 +70,12 @@ class BackendClient:
             message = str(detail.get("message") or "任务数量已达上限")
             raise JobLimitError(message, str(detail.get("error_code") or "ACTIVE_JOB_LIMIT"))
 
+        if response.status_code == 422:
+            detail = self._detail(response)
+            if detail.get("error_code") == "ALBUM_TOO_LARGE":
+                message = str(detail.get("message") or "页数超过上限")
+                raise JobLimitError(message, "ALBUM_TOO_LARGE")
+
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -209,6 +215,21 @@ class BackendClient:
             message = self._error_detail_message(exc.response) or "搜索失败，请稍后再试"
             error_code = "SEARCH_DISABLED" if exc.response.status_code == 403 else "BACKEND_SEARCH_FAILED"
             raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
+    async def get_ranking(self, period: str, page: int = 1, limit: int = 10) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                f"/api/rankings/{period}",
+                params={"page": page, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            message = self._error_detail_message(exc.response) or "排行榜获取失败，请稍后再试"
+            raise BackendError(message, "BACKEND_RANKING_FAILED") from exc
         except httpx.HTTPError as exc:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
