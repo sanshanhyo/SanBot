@@ -136,6 +136,12 @@ def _format_video(video: JavLibraryVideo) -> str:
         lines.append(f"Genres: {' / '.join(video.genres)}")
     if video.cover_url:
         lines.append(f"Cover: {video.cover_url}")
+    if video.trailer_url:
+        lines.append(f"Trailer: {video.trailer_url}")
+    elif video.trailer_page_url:
+        lines.append(f"Trailer page: {video.trailer_page_url}")
+    elif video.trailer_requires_login:
+        lines.append("Trailer: requires login")
     lines.append(f"URL: {video.url}")
     return "\n".join(lines)
 

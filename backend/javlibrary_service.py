@@ -16,6 +16,7 @@ from javlibrary_crawler.models import JavLibrarySearchItem
 from javlibrary_crawler.normalizer import normalize_code
 
 logger = logging.getLogger(__name__)
+JAV_VIDEO_CACHE_SCHEMA_VERSION = 2
 
 COMMON_ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
     "三上悠亚": ("三上悠亜", "三上悠亞", "Mikami Yua", "Yua Mikami"),
@@ -149,7 +150,7 @@ class JavLibraryService:
 
         if not force_refresh:
             cached = self._get_cached(code)
-            if cached is not None:
+            if cached is not None and self._is_current_video_cache(cached):
                 return cached
 
         crawler = self._create_crawler()
@@ -167,6 +168,7 @@ class JavLibraryService:
             crawler.close()
 
         payload = video.to_dict()
+        payload["cache_schema_version"] = JAV_VIDEO_CACHE_SCHEMA_VERSION
         self._store_success(code, payload)
         return payload
 
@@ -537,6 +539,14 @@ class JavLibraryService:
                     expires_at.isoformat(),
                 ),
             )
+
+    @staticmethod
+    def _is_current_video_cache(payload: dict[str, Any]) -> bool:
+        try:
+            version = int(payload.get("cache_schema_version") or 0)
+        except (TypeError, ValueError):
+            return False
+        return version >= JAV_VIDEO_CACHE_SCHEMA_VERSION
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

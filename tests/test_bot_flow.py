@@ -67,6 +67,9 @@ class FakeCreateBackend:
         self.audit_events: list[dict] = []
         self.active_job: dict | None = None
         self.page_count = page_count
+        self.trailer_url: str | None = "https://javdb.com/trailers/SSIS-123.mp4"
+        self.trailer_page_url: str | None = None
+        self.trailer_requires_login = False
 
     async def health(self) -> dict:
         return {"status": "ok"}
@@ -196,7 +199,9 @@ class FakeCreateBackend:
             "rating": 4.5,
             "actors": ["Alice", "Bob"],
             "genres": ["Drama", "HD"],
-            "trailer_url": "https://javdb.com/trailers/SSIS-123.mp4",
+            "trailer_url": self.trailer_url,
+            "trailer_page_url": self.trailer_page_url,
+            "trailer_requires_login": self.trailer_requires_login,
             "preview_image_urls": ["https://javdb.com/samples/1.jpg", "https://javdb.com/samples/2.jpg"],
             "resource_page_url": "https://javdb.com/v/abc123",
         }
@@ -667,6 +672,40 @@ async def test_jav_trailer_action_sends_video(tmp_path: Path) -> None:
     )
 
     assert ("10001", "https://javdb.com/trailers/SSIS-123.mp4") in napcat.videos
+
+
+@pytest.mark.asyncio
+async def test_jav_trailer_action_explains_login_requirement(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.trailer_url = None
+    backend.trailer_requires_login = True
+    state = BotState()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "预告片"}}]),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert any("回复“预告片”" in message for _group, message in napcat.sent)
+    assert any("需要 JavDB 登录" in message for _group, message in napcat.sent)
 
 
 @pytest.mark.asyncio

@@ -1348,7 +1348,11 @@ async def _available_jav_actions(
     napcat: NapCatClient,
 ) -> set[str]:
     actions: set[str] = set()
-    if settings.enable_jav_trailer and _payload_str(payload, "trailer_url"):
+    if settings.enable_jav_trailer and (
+        _payload_str(payload, "trailer_url")
+        or _payload_str(payload, "trailer_page_url")
+        or bool(payload.get("trailer_requires_login"))
+    ):
         actions.add("trailer")
     if settings.enable_jav_stills and _payload_list(payload, "preview_image_urls"):
         member_count = await _get_group_member_count(group_id, napcat)
@@ -1400,14 +1404,24 @@ async def _send_jav_resource_page(payload: dict[str, Any], group_id: str, napcat
 
 async def _send_jav_trailer(payload: dict[str, Any], group_id: str, napcat: NapCatClient) -> None:
     trailer_url = _payload_str(payload, "trailer_url")
-    if not trailer_url:
-        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+    if trailer_url:
+        try:
+            await napcat.send_group_video(group_id, trailer_url)
+        except NapCatAPIError:
+            logger.warning("Could not send JAV trailer as video; falling back to link.", exc_info=True)
+            await _safe_send(napcat, group_id, lang_text("jav_trailer_link", url=trailer_url))
         return
-    try:
-        await napcat.send_group_video(group_id, trailer_url)
-    except NapCatAPIError:
-        logger.warning("Could not send JAV trailer as video; falling back to link.", exc_info=True)
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_link", url=trailer_url))
+
+    trailer_page_url = _payload_str(payload, "trailer_page_url")
+    if trailer_page_url:
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_page", url=trailer_page_url))
+        return
+
+    if payload.get("trailer_requires_login"):
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_requires_login"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
 
 
 async def _send_jav_stills(

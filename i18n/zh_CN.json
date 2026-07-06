@@ -141,6 +141,8 @@
   "jav_action_unavailable": "这个操作现在不可用，可能是源站没有给到数据(つд⊂)",
   "jav_resource_page": "JavDB 外部页面：{url}\n请自行判断页面内容，并遵守当地法律法规与版权要求。",
   "jav_trailer_link": "预告片发送不太顺利，先给你链接：{url}",
+  "jav_trailer_page": "JavDB 没有给到可直接发送的视频直链，先给你预告片页面：{url}",
+  "jav_trailer_requires_login": "这条预告片需要 JavDB 登录后才能看，当前没拿到可直接发送的视频直链(つд⊂)\n可以先回复“资源页”去源站查看。",
   "jav_stills_sending": "先给你投喂 {count} 张剧照预览(｀・ω・´)",
   "jav_stills_failed": "剧照发送失败了，NapCat 好像没接住(つд⊂)",
   "jav_stills_pdf_preparing": "正在把 {count} 张剧照打包成 PDF，稍等一下下(｡･ω･｡)",

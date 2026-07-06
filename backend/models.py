@@ -141,6 +141,8 @@ class JavVideoResponse(BaseModel):
     genres: list[str] = Field(default_factory=list)
     rating: float | None = None
     trailer_url: str | None = None
+    trailer_page_url: str | None = None
+    trailer_requires_login: bool = False
     preview_image_urls: list[str] = Field(default_factory=list)
     resource_page_url: str | None = None
     cache_hit: bool = False

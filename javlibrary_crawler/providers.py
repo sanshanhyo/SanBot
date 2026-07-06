@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from typing import Protocol
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 from .errors import JavLibraryError, JavLibraryFetchError, JavLibraryNotFoundError
 from .fetcher import FetchResponse
@@ -297,7 +297,7 @@ class JavDbProvider(BaseProvider):
         actors = _link_texts_by_href(root, ["/actors/"])
         genres = _link_texts_after_strong(root, ["類別", "类别", "Tags"])
         rating = _rating_from_text(_first_text(root, class_="score-stars"))
-        trailer_url = _javdb_trailer_url(root, url)
+        trailer_url, trailer_page_url, trailer_requires_login = _javdb_trailer_info(root, url)
         preview_image_urls = _javdb_preview_image_urls(root, url, cover_url)
 
         return JavLibraryVideo(
@@ -316,6 +316,8 @@ class JavDbProvider(BaseProvider):
             genres=genres,
             rating=rating,
             trailer_url=trailer_url,
+            trailer_page_url=trailer_page_url,
+            trailer_requires_login=trailer_requires_login,
             preview_image_urls=preview_image_urls,
             resource_page_url=url,
         )
@@ -509,7 +511,9 @@ def _javdb_card_date(card: Node) -> str | None:
     return match.group(1) if match else None
 
 
-def _javdb_trailer_url(root: Node, page_url: str) -> str | None:
+def _javdb_trailer_info(root: Node, page_url: str) -> tuple[str | None, str | None, bool]:
+    trailer_page_url: str | None = None
+    requires_login = False
     for node in root.find_all():
         if node.tag not in {"video", "source", "a"}:
             continue
@@ -519,14 +523,25 @@ def _javdb_trailer_url(root: Node, page_url: str) -> str | None:
         text = node.text().lower()
         is_trailer_node = any(
             token in f"{class_text} {id_text} {rel_text} {text}"
-            for token in ("trailer", "preview", "sample", "予告", "预告")
+            for token in ("trailer", "preview-video", "preview video", "予告", "预告")
         )
         if node.tag in {"video", "source"} or is_trailer_node:
-            for attr in ("src", "data-src", "data-video", "data-video-src", "href"):
+            for attr in ("src", "data-src", "data-video", "data-video-src", "href", "data-href", "data-url"):
                 url = _absolute_url(node.attrs.get(attr), page_url)
-                if url and _looks_like_video_url(url):
-                    return url
-    return None
+                if not url:
+                    continue
+                if _looks_like_video_url(url):
+                    return url, trailer_page_url, requires_login
+                if _looks_like_login_url(url):
+                    requires_login = True
+                elif node.tag == "a" and is_trailer_node and trailer_page_url is None:
+                    trailer_page_url = url
+    return None, trailer_page_url, requires_login
+
+
+def _looks_like_login_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.path.rstrip("/") in {"/login", "/users/sign_in"}
 
 
 def _javdb_preview_image_urls(root: Node, page_url: str, cover_url: str | None) -> list[str]:
