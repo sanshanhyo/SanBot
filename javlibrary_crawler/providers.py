@@ -578,7 +578,7 @@ def _javdb_preview_image_urls(root: Node, page_url: str, cover_url: str | None) 
             if url not in urls:
                 urls.append(url)
             break
-    return urls[:12]
+    return urls
 
 
 def _looks_like_video_url(value: str) -> bool:

@@ -375,6 +375,36 @@ def test_crawler_detects_javdb_login_only_trailer() -> None:
     assert video.trailer_requires_login is True
 
 
+def test_crawler_keeps_all_javdb_preview_images() -> None:
+    extra_images = "\n".join(
+        f'<a class="tile-item" href="/samples/SSIS-123_l_{index}.jpg"><img src="/samples/SSIS-123_s_{index}.jpg"></a>'
+        for index in range(20, 40)
+    )
+    detail_html = JAVDB_DETAIL_HTML.replace("</div>\n  </body>", f"{extra_images}\n    </div>\n  </body>")
+
+    class FakeFetcher:
+        def get(self, url: str) -> FetchResponse:
+            if "/search" in url:
+                return FetchResponse(url, 200, JAVDB_SEARCH_HTML)
+            return FetchResponse(url, 200, detail_html)
+
+        def post(self, url: str, data: dict[str, str] | None = None) -> FetchResponse:
+            raise AssertionError("post should not be called")
+
+        def close(self) -> None:
+            pass
+
+    crawler = JavLibraryCrawler(
+        JavLibraryCrawlerConfig(provider_order=("javdb",)),
+        fetcher=FakeFetcher(),  # type: ignore[arg-type]
+    )
+
+    video = crawler.lookup("SSIS-123")
+
+    assert len(video.preview_image_urls) == 23
+    assert video.preview_image_urls[-1] == "https://javdb.com/samples/SSIS-123_l_39.jpg"
+
+
 def test_crawler_searches_javdb_by_chinese_query() -> None:
     class FakeFetcher:
         def __init__(self) -> None:

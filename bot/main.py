@@ -42,7 +42,7 @@ DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
 DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
 DEFAULT_JAV_STILLS_MAX_COUNT = 3
-DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 120
+DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 0
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
 DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -210,8 +210,8 @@ class BotSettings:
             ),
             enable_jav_stills_pdf=_env_bool("ENABLE_JAV_STILLS_PDF", True),
             jav_stills_pdf_max_images=max(
-                1,
-                min(300, _env_int("JAV_STILLS_PDF_MAX_IMAGES", DEFAULT_JAV_STILLS_PDF_MAX_IMAGES)),
+                0,
+                _env_int("JAV_STILLS_PDF_MAX_IMAGES", DEFAULT_JAV_STILLS_PDF_MAX_IMAGES),
             ),
             jav_stills_pdf_download_concurrency=max(
                 1,
@@ -1468,7 +1468,7 @@ async def _send_jav_stills_pdf(
     settings: BotSettings,
     napcat: NapCatClient,
 ) -> None:
-    selected_urls = urls[: settings.jav_stills_pdf_max_images]
+    selected_urls = urls if settings.jav_stills_pdf_max_images <= 0 else urls[: settings.jav_stills_pdf_max_images]
     if not selected_urls:
         return
 
