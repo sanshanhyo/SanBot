@@ -146,6 +146,11 @@ ENABLE_JAV_TRAILER=true
 ENABLE_JAV_STILLS=false
 JAV_STILLS_MAX_COUNT=3
 JAV_STILLS_MAX_GROUP_MEMBERS=150
+ENABLE_JAV_STILLS_PDF=true
+JAV_STILLS_PDF_MAX_IMAGES=120
+JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY=4
+JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS=60
+JAV_STILLS_MAX_IMAGE_BYTES=8388608
 ENABLE_MISSAV_LINK=false
 MISSAV_BASE_URL=https://missav.live
 MISSAV_ALLOWED_GROUP_IDS=
@@ -236,9 +241,14 @@ DATA_DIR=./data
 | `JAV_ACTION_TIMEOUT_SECONDS` | 番号查询后等待用户回复操作的时间，默认 `300` 秒 |
 | `ENABLE_JAV_RESOURCE_PAGE` | 是否允许回复“资源页”查看 JavDB 外部页面，默认 `true` |
 | `ENABLE_JAV_TRAILER` | 是否允许回复“预告片”发送预告片，默认 `true` |
-| `ENABLE_JAV_STILLS` | 是否允许回复“剧照”发送少量剧照，默认 `false` |
+| `ENABLE_JAV_STILLS` | 是否允许回复“剧照”发送剧照预览，默认 `false` |
 | `JAV_STILLS_MAX_COUNT` | 每次最多发送剧照数量，默认 `3`，最大 `6` |
 | `JAV_STILLS_MAX_GROUP_MEMBERS` | 剧照入口允许的最大群人数，默认 `150`；超过会隐藏 |
+| `ENABLE_JAV_STILLS_PDF` | 回复“剧照”后是否把剧照打包为 PDF 上传，默认 `true` |
+| `JAV_STILLS_PDF_MAX_IMAGES` | 剧照 PDF 最多打包图片数，默认 `120`，最大 `300` |
+| `JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY` | 剧照 PDF 下载并发，默认 `4`，最大 `8` |
+| `JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS` | 单次剧照图片请求超时，默认 `60` 秒 |
+| `JAV_STILLS_MAX_IMAGE_BYTES` | 单张剧照最大下载体积，默认 `8388608` 字节 |
 | `ENABLE_MISSAV_LINK` | 是否显示外部播放入口，默认 `false` |
 | `MISSAV_BASE_URL` | 外部播放入口基础地址，默认 `https://missav.live` |
 | `MISSAV_ALLOWED_GROUP_IDS` | 外部播放入口白名单群号，逗号分隔；未配置时不显示 |
@@ -478,7 +488,7 @@ browser:
 在线播放
 ```
 
-`预告片` 默认开启，会尝试发送 JavDB 预告片；`资源页` 默认开启，只发送 JavDB 外部页面链接，不展开磁力；`剧照` 默认关闭，开启后每次最多发送 `JAV_STILLS_MAX_COUNT` 张，群人数超过 `JAV_STILLS_MAX_GROUP_MEMBERS` 时会隐藏；`在线播放` 默认关闭，必须配置 `ENABLE_MISSAV_LINK=true` 且群号在 `MISSAV_ALLOWED_GROUP_IDS` 内，群人数超过 `MISSAV_MAX_GROUP_MEMBERS` 时会强制隐藏入口。外部页面与播放入口均会附带合规和版权提示。
+`预告片` 默认开启，会尝试发送 JavDB 预告片；`资源页` 默认开启，只发送 JavDB 外部页面链接，不展开磁力；`剧照` 默认关闭，开启后会先发送最多 `JAV_STILLS_MAX_COUNT` 张预览图，再按 `ENABLE_JAV_STILLS_PDF` 配置把剧照打包成 PDF 上传，群人数超过 `JAV_STILLS_MAX_GROUP_MEMBERS` 时会隐藏；`在线播放` 默认关闭，必须配置 `ENABLE_MISSAV_LINK=true` 且群号在 `MISSAV_ALLOWED_GROUP_IDS` 内，群人数超过 `MISSAV_MAX_GROUP_MEMBERS` 时会强制隐藏入口。外部页面与播放入口均会附带合规和版权提示。
 
 JavDB 搜索和排行榜只返回公开元数据列表，不下载视频：
 

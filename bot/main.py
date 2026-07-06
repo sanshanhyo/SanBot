@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -41,6 +42,10 @@ DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
 DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
 DEFAULT_JAV_STILLS_MAX_COUNT = 3
+DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 120
+DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
+DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
+DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 DEFAULT_MISSAV_MAX_GROUP_MEMBERS = 150
 COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
@@ -53,6 +58,10 @@ class UploadPreparationError(Exception):
 
 
 class UploadCancelledError(Exception):
+    pass
+
+
+class JavStillsPdfError(Exception):
     pass
 
 
@@ -130,6 +139,11 @@ class BotSettings:
     enable_jav_stills: bool = False
     jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
     jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
+    enable_jav_stills_pdf: bool = True
+    jav_stills_pdf_max_images: int = DEFAULT_JAV_STILLS_PDF_MAX_IMAGES
+    jav_stills_pdf_download_concurrency: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY
+    jav_stills_pdf_download_timeout_seconds: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS
+    jav_stills_max_image_bytes: int = DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES
     enable_missav_link: bool = False
     missav_base_url: str = "https://missav.live"
     missav_allowed_group_ids: set[str] = field(default_factory=set)
@@ -189,6 +203,32 @@ class BotSettings:
             jav_stills_max_group_members=max(
                 0,
                 _env_int("JAV_STILLS_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS),
+            ),
+            enable_jav_stills_pdf=_env_bool("ENABLE_JAV_STILLS_PDF", True),
+            jav_stills_pdf_max_images=max(
+                1,
+                min(300, _env_int("JAV_STILLS_PDF_MAX_IMAGES", DEFAULT_JAV_STILLS_PDF_MAX_IMAGES)),
+            ),
+            jav_stills_pdf_download_concurrency=max(
+                1,
+                min(
+                    8,
+                    _env_int(
+                        "JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY",
+                        DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY,
+                    ),
+                ),
+            ),
+            jav_stills_pdf_download_timeout_seconds=max(
+                5,
+                _env_int(
+                    "JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS",
+                    DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS,
+                ),
+            ),
+            jav_stills_max_image_bytes=max(
+                256 * 1024,
+                _env_int("JAV_STILLS_MAX_IMAGE_BYTES", DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES),
             ),
             enable_missav_link=_env_bool("ENABLE_MISSAV_LINK", False),
             missav_base_url=(os.getenv("MISSAV_BASE_URL") or "https://missav.live").rstrip("/"),
@@ -1376,13 +1416,14 @@ async def _send_jav_stills(
     settings: BotSettings,
     napcat: NapCatClient,
 ) -> None:
-    urls = _payload_list(payload, "preview_image_urls")[: settings.jav_stills_max_count]
-    if not urls:
+    all_urls = _payload_list(payload, "preview_image_urls")
+    preview_urls = all_urls[: settings.jav_stills_max_count]
+    if not preview_urls:
         await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
         return
-    await _safe_send(napcat, group_id, lang_text("jav_stills_sending", count=len(urls)))
+    await _safe_send(napcat, group_id, lang_text("jav_stills_sending", count=len(preview_urls)))
     sent_count = 0
-    for url in urls:
+    for url in preview_urls:
         try:
             await napcat.send_group_image(group_id, url)
             sent_count += 1
@@ -1390,6 +1431,297 @@ async def _send_jav_stills(
             logger.warning("Could not send JAV still image %s.", url, exc_info=True)
     if sent_count == 0:
         await _safe_send(napcat, group_id, lang_text("jav_stills_failed"))
+    if settings.enable_jav_stills_pdf:
+        await _send_jav_stills_pdf(payload, all_urls, group_id, settings, napcat)
+
+
+async def _send_jav_stills_pdf(
+    payload: dict[str, Any],
+    urls: list[str],
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> None:
+    selected_urls = urls[: settings.jav_stills_pdf_max_images]
+    if not selected_urls:
+        return
+
+    code = _jav_payload_code(payload)
+    job_id = f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', code).strip('._') or 'JAV'}-{uuid.uuid4().hex[:8]}"
+    cache_root = (settings.data_dir.resolve() / "jav_stills").resolve()
+    dest_dir = (cache_root / job_id).resolve()
+    if not dest_dir.is_relative_to(cache_root):
+        logger.warning("Skip JAV stills PDF outside cache dir: %s", dest_dir)
+        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="INVALID_CACHE_PATH"))
+        return
+
+    if len(urls) > len(selected_urls):
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text(
+                "jav_stills_pdf_preparing_limited",
+                count=len(selected_urls),
+                total=len(urls),
+            ),
+        )
+    else:
+        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_preparing", count=len(selected_urls)))
+
+    try:
+        pdf_path, upload_filename, image_count = await _build_jav_stills_pdf(
+            payload,
+            selected_urls,
+            dest_dir,
+            settings,
+        )
+        upload_files = await asyncio.to_thread(
+            _prepare_upload_files,
+            pdf_path,
+            upload_filename,
+            settings.max_upload_bytes,
+            settings.max_upload_filename_bytes,
+            None,
+        )
+        if len(upload_files) > 1:
+            await _safe_send(
+                napcat,
+                group_id,
+                lang_text("jav_stills_pdf_split", count=len(upload_files)),
+            )
+
+        for upload_path, upload_name in upload_files:
+            if not await _upload_with_retries(
+                napcat,
+                group_id,
+                upload_path,
+                upload_name,
+                job_id,
+                settings.upload_retries,
+            ):
+                await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="NAPCAT_UPLOAD_FAILED"))
+                return
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text("jav_stills_pdf_completed", count=image_count, filename=upload_filename),
+        )
+    except UploadPreparationError:
+        logger.exception("Could not prepare JAV stills PDF upload for %s.", code)
+        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="PDF_UPLOAD_PREPARE_FAILED"))
+    except JavStillsPdfError:
+        logger.exception("Could not build JAV stills PDF for %s.", code)
+        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="JAV_STILLS_PDF_FAILED"))
+    finally:
+        await asyncio.to_thread(_cleanup_bot_download_dir, dest_dir, cache_root)
+
+
+async def _build_jav_stills_pdf(
+    payload: dict[str, Any],
+    urls: list[str],
+    dest_dir: Path,
+    settings: BotSettings,
+) -> tuple[Path, str, int]:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = (dest_dir / "images").resolve()
+    if not images_dir.is_relative_to(dest_dir):
+        raise JavStillsPdfError("invalid image cache path")
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    semaphore = asyncio.Semaphore(settings.jav_stills_pdf_download_concurrency)
+    timeout = httpx.Timeout(settings.jav_stills_pdf_download_timeout_seconds)
+    limits = httpx.Limits(
+        max_connections=settings.jav_stills_pdf_download_concurrency,
+        max_keepalive_connections=settings.jav_stills_pdf_download_concurrency,
+    )
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        headers=_jav_stills_request_headers(payload),
+        timeout=timeout,
+        limits=limits,
+    ) as client:
+        image_paths = await asyncio.gather(
+            *[
+                _download_jav_still_image(
+                    client,
+                    url,
+                    images_dir,
+                    index,
+                    semaphore,
+                    settings.jav_stills_max_image_bytes,
+                )
+                for index, url in enumerate(urls, start=1)
+            ]
+        )
+
+    usable_paths = [path for path in image_paths if path is not None]
+    if not usable_paths:
+        raise JavStillsPdfError("no usable still images")
+
+    pdf_filename = _jav_stills_pdf_filename(payload, MAX_FILENAME_BYTES)
+    pdf_path = (dest_dir / pdf_filename).resolve()
+    if not pdf_path.is_relative_to(dest_dir):
+        raise JavStillsPdfError("invalid pdf path")
+
+    await asyncio.to_thread(_convert_jav_stills_to_pdf, usable_paths, pdf_path)
+    if not pdf_path.is_file() or pdf_path.stat().st_size <= 0:
+        raise JavStillsPdfError("empty pdf")
+
+    upload_filename = _safe_filename(
+        pdf_path.name,
+        f"[{_jav_payload_code(payload)}] 剧照.pdf",
+        max_bytes=settings.max_upload_filename_bytes,
+    )
+    return pdf_path, upload_filename, len(usable_paths)
+
+
+async def _download_jav_still_image(
+    client: httpx.AsyncClient,
+    image_url: str,
+    images_dir: Path,
+    index: int,
+    semaphore: asyncio.Semaphore,
+    max_bytes: int,
+) -> Path | None:
+    tmp_path: Path | None = None
+    async with semaphore:
+        try:
+            parsed = urlsplit(image_url)
+            if parsed.scheme not in {"http", "https"}:
+                raise JavStillsPdfError("unsupported image url scheme")
+            async with client.stream("GET", image_url) as response:
+                response.raise_for_status()
+                content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+                if content_type and not (
+                    content_type.startswith("image/")
+                    or content_type in {"application/octet-stream", "binary/octet-stream"}
+                ):
+                    raise JavStillsPdfError(f"unexpected content type: {content_type}")
+
+                extension = _jav_stills_image_extension(content_type, image_url)
+                image_path = (images_dir / f"{index:03d}{extension}").resolve()
+                if not image_path.is_relative_to(images_dir):
+                    raise JavStillsPdfError("invalid image path")
+                tmp_path = image_path.with_name(f"{image_path.name}.tmp")
+
+                size = 0
+                with tmp_path.open("wb") as file:
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise JavStillsPdfError("still image is too large")
+                        file.write(chunk)
+
+            if tmp_path is None or not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
+                raise JavStillsPdfError("empty still image")
+            tmp_path.replace(image_path)
+            return image_path
+        except Exception:
+            logger.warning("Could not download JAV still image %s.", image_url, exc_info=True)
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+            return None
+
+
+def _jav_stills_request_headers(payload: dict[str, Any]) -> dict[str, str]:
+    referer = _jav_resource_page_url(payload) or _payload_str(payload, "url") or "https://javdb.com/"
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Referer": referer,
+    }
+
+
+def _jav_stills_image_extension(content_type: str, image_url: str) -> str:
+    content_type_extensions = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/tiff": ".tif",
+        "image/avif": ".avif",
+    }
+    if content_type in content_type_extensions:
+        return content_type_extensions[content_type]
+
+    suffix = Path(urlsplit(image_url).path).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tif", ".tiff", ".avif"}:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    return ".jpg"
+
+
+def _jav_stills_pdf_filename(payload: dict[str, Any], max_bytes: int) -> str:
+    code = _jav_payload_code(payload)
+    title = str(payload.get("title") or "").strip()
+    if title.upper().startswith(code.upper()):
+        title = title[len(code):].strip(" -_")
+    raw_name = f"[{code}] {title} 剧照.pdf" if title else f"[{code}] 剧照.pdf"
+    return _safe_filename(raw_name, f"[{code}] 剧照.pdf", max_bytes=max_bytes)
+
+
+def _jav_payload_code(payload: dict[str, Any]) -> str:
+    code = str(payload.get("code") or "JAV").strip().upper()
+    return re.sub(r"[^A-Z0-9_-]+", "_", code).strip("_") or "JAV"
+
+
+def _convert_jav_stills_to_pdf(image_paths: list[Path], pdf_path: Path) -> None:
+    try:
+        import img2pdf
+    except ImportError as exc:
+        raise JavStillsPdfError("missing img2pdf") from exc
+
+    try:
+        pdf_path.write_bytes(img2pdf.convert([str(path) for path in image_paths]))
+        return
+    except Exception:
+        logger.info("Direct img2pdf conversion failed for JAV stills; retrying through Pillow.", exc_info=True)
+
+    converted_paths = _convert_jav_stills_with_pillow(image_paths, pdf_path.parent / "converted")
+    if not converted_paths:
+        raise JavStillsPdfError("no converted still images")
+    try:
+        pdf_path.write_bytes(img2pdf.convert([str(path) for path in converted_paths]))
+    except Exception as exc:
+        raise JavStillsPdfError("img2pdf conversion failed") from exc
+
+
+def _convert_jav_stills_with_pillow(image_paths: list[Path], converted_dir: Path) -> list[Path]:
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as exc:
+        raise JavStillsPdfError("missing Pillow") from exc
+
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    converted_paths: list[Path] = []
+    for index, image_path in enumerate(image_paths, start=1):
+        try:
+            with Image.open(image_path) as image:
+                if getattr(image, "is_animated", False):
+                    image.seek(0)
+                image = ImageOps.exif_transpose(image)
+                if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+
+                converted_path = (converted_dir / f"{index:03d}.jpg").resolve()
+                if not converted_path.is_relative_to(converted_dir.resolve()):
+                    raise JavStillsPdfError("invalid converted image path")
+                image.save(converted_path, "JPEG", quality=92)
+                converted_paths.append(converted_path)
+        except Exception:
+            logger.warning("Could not convert JAV still image %s with Pillow.", image_path, exc_info=True)
+    return converted_paths
 
 
 async def _send_missav_link(

@@ -760,7 +760,12 @@ async def test_jav_stills_action_is_opt_in(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
     state = BotState()
-    settings = replace(_settings(tmp_path), enable_jav_stills=True, jav_stills_max_count=1)
+    settings = replace(
+        _settings(tmp_path),
+        enable_jav_stills=True,
+        jav_stills_max_count=1,
+        enable_jav_stills_pdf=False,
+    )
 
     await handle_group_message(
         _group_event(
@@ -784,8 +789,56 @@ async def test_jav_stills_action_is_opt_in(tmp_path: Path) -> None:
         TaskCollector(),
     )
 
-    assert any("准备发送 1 张剧照" in message for _group, message in napcat.sent)
+    assert any("先给你投喂 1 张剧照预览" in message for _group, message in napcat.sent)
     assert ("10001", "IMAGE:https://javdb.com/samples/1.jpg") in napcat.sent
+
+
+@pytest.mark.asyncio
+async def test_jav_stills_action_uploads_pdf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+    settings = replace(_settings(tmp_path), enable_jav_stills=True, enable_jav_stills_pdf=True)
+
+    async def fake_build_jav_stills_pdf(
+        payload: dict,
+        urls: list[str],
+        dest_dir: Path,
+        settings: BotSettings,
+    ) -> tuple[Path, str, int]:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = dest_dir / "[SSIS-123] 剧照.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n")
+        return pdf_path, pdf_path.name, len(urls)
+
+    monkeypatch.setattr(bot_main, "_build_jav_stills_pdf", fake_build_jav_stills_pdf)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "剧照"}}]),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert any("正在把 2 张剧照打包成 PDF" in message for _group, message in napcat.sent)
+    assert napcat.uploads
+    assert napcat.uploads[0][2] == "[SSIS-123] 剧照.pdf"
+    assert any("剧照 PDF 已上传" in message for _group, message in napcat.sent)
 
 
 @pytest.mark.asyncio
