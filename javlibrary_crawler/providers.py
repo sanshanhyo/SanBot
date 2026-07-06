@@ -297,6 +297,8 @@ class JavDbProvider(BaseProvider):
         actors = _link_texts_by_href(root, ["/actors/"])
         genres = _link_texts_after_strong(root, ["類別", "类别", "Tags"])
         rating = _rating_from_text(_first_text(root, class_="score-stars"))
+        trailer_url = _javdb_trailer_url(root, url)
+        preview_image_urls = _javdb_preview_image_urls(root, url, cover_url)
 
         return JavLibraryVideo(
             code=code,
@@ -313,6 +315,9 @@ class JavDbProvider(BaseProvider):
             actors=actors,
             genres=genres,
             rating=rating,
+            trailer_url=trailer_url,
+            preview_image_urls=preview_image_urls,
+            resource_page_url=url,
         )
 
 
@@ -502,6 +507,64 @@ def _javdb_card_date(card: Node) -> str | None:
     text = card.text()
     match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     return match.group(1) if match else None
+
+
+def _javdb_trailer_url(root: Node, page_url: str) -> str | None:
+    for node in root.find_all():
+        if node.tag not in {"video", "source", "a"}:
+            continue
+        class_text = node.attrs.get("class", "").lower()
+        id_text = node.attrs.get("id", "").lower()
+        rel_text = node.attrs.get("rel", "").lower()
+        text = node.text().lower()
+        is_trailer_node = any(
+            token in f"{class_text} {id_text} {rel_text} {text}"
+            for token in ("trailer", "preview", "sample", "予告", "预告")
+        )
+        if node.tag in {"video", "source"} or is_trailer_node:
+            for attr in ("src", "data-src", "data-video", "data-video-src", "href"):
+                url = _absolute_url(node.attrs.get(attr), page_url)
+                if url and _looks_like_video_url(url):
+                    return url
+    return None
+
+
+def _javdb_preview_image_urls(root: Node, page_url: str, cover_url: str | None) -> list[str]:
+    urls: list[str] = []
+    cover_key = cover_url.split("?", 1)[0] if cover_url else ""
+    for node in root.find_all():
+        if node.tag not in {"img", "a"}:
+            continue
+        class_text = node.attrs.get("class", "").lower()
+        parent_class = node.parent.attrs.get("class", "").lower() if node.parent is not None else ""
+        id_text = node.attrs.get("id", "").lower()
+        marker = f"{class_text} {parent_class} {id_text}"
+        looks_like_preview = any(
+            token in marker
+            for token in ("preview", "sample", "screenshot", "gallery", "tile", "cover")
+        )
+        attr_names = ("src", "data-src", "href") if looks_like_preview else ("data-src", "href")
+        for attr in attr_names:
+            url = _absolute_url(node.attrs.get(attr), page_url)
+            if not url or not _looks_like_image_url(url):
+                continue
+            clean_url = url.split("?", 1)[0]
+            if cover_key and clean_url == cover_key:
+                continue
+            if url not in urls:
+                urls.append(url)
+            break
+    return urls[:12]
+
+
+def _looks_like_video_url(value: str) -> bool:
+    clean = value.split("?", 1)[0].lower()
+    return clean.endswith((".mp4", ".webm", ".mov", ".m3u8"))
+
+
+def _looks_like_image_url(value: str) -> bool:
+    clean = value.split("?", 1)[0].lower()
+    return clean.endswith((".jpg", ".jpeg", ".png", ".webp"))
 
 
 def _candidate_limit(limit: int) -> int:

@@ -74,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Print JSON output.")
     parser.add_argument("--base-url", help="Javlibrary base URL.")
     parser.add_argument("--language", help="Javlibrary language path, default: cn.")
-    parser.add_argument("--providers", help="Comma-separated provider order, default: javlibrary,jav321,javdb,javbus.")
+    parser.add_argument("--providers", help="Comma-separated provider order, default: javdb,javlibrary,jav321,javbus.")
     parser.add_argument("--javdb-base-url", help="JavDB base URL.")
     parser.add_argument("--javbus-base-url", help="JavBus base URL.")
     parser.add_argument("--jav321-base-url", help="Jav321 base URL.")

@@ -16,6 +16,8 @@ class FakeNapCat:
     def __init__(self, upload_failures: int = 0, image_failures: int = 0) -> None:
         self.sent: list[tuple[str, str]] = []
         self.uploads: list[tuple[str, Path, str]] = []
+        self.videos: list[tuple[str, str]] = []
+        self.group_member_count = 80
         self.upload_attempts = 0
         self.upload_failures = upload_failures
         self.image_attempts = 0
@@ -31,6 +33,14 @@ class FakeNapCat:
             raise NapCatAPIError("image failed")
         self.sent.append((group_id, f"IMAGE:{image_url}"))
         return {"status": "ok", "retcode": 0}
+
+    async def send_group_video(self, group_id: str, video_url: str) -> dict:
+        self.videos.append((group_id, video_url))
+        self.sent.append((group_id, f"VIDEO:{video_url}"))
+        return {"status": "ok", "retcode": 0}
+
+    async def get_group_info(self, group_id: str) -> dict:
+        return {"status": "ok", "retcode": 0, "data": {"group_id": group_id, "member_count": self.group_member_count}}
 
     async def upload_group_file(self, group_id: str, file_path: str | Path, name: str) -> dict:
         self.upload_attempts += 1
@@ -186,6 +196,9 @@ class FakeCreateBackend:
             "rating": 4.5,
             "actors": ["Alice", "Bob"],
             "genres": ["Drama", "HD"],
+            "trailer_url": "https://javdb.com/trailers/SSIS-123.mp4",
+            "preview_image_urls": ["https://javdb.com/samples/1.jpg", "https://javdb.com/samples/2.jpg"],
+            "resource_page_url": "https://javdb.com/v/abc123",
         }
 
     async def create_job(
@@ -617,8 +630,162 @@ async def test_jav_command_sends_video_metadata(tmp_path: Path) -> None:
     assert "番号信息：SSIS-123" in napcat.sent[1][1]
     assert "标题：SSIS-123 A Sample Title" in napcat.sent[1][1]
     assert "演员：Alice / Bob" in napcat.sent[1][1]
+    assert "可选操作来啦" in napcat.sent[2][1]
+    assert "回复“预告片”" in napcat.sent[2][1]
+    assert "回复“资源页”" in napcat.sent[2][1]
+    assert "在线播放" not in napcat.sent[2][1]
     await asyncio.sleep(0)
     assert napcat.sent[-1] == ("10001", "IMAGE:https://example.test/jav-cover.jpg")
+
+
+@pytest.mark.asyncio
+async def test_jav_trailer_action_sends_video(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "预告片"}}]),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert ("10001", "https://javdb.com/trailers/SSIS-123.mp4") in napcat.videos
+
+
+@pytest.mark.asyncio
+async def test_jav_resource_action_sends_javdb_page(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "资源页"}}]),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert any("JavDB 外部页面：https://javdb.com/v/abc123" in message for _group, message in napcat.sent)
+
+
+@pytest.mark.asyncio
+async def test_missav_action_requires_whitelisted_small_group(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+    settings = replace(
+        _settings(tmp_path),
+        enable_missav_link=True,
+        missav_allowed_group_ids={"10001"},
+        missav_max_group_members=150,
+    )
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    assert any("回复“在线播放”" in message for _group, message in napcat.sent)
+
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "在线播放"}}]),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    assert any("https://missav.live/SSIS-123" in message for _group, message in napcat.sent)
+
+    big_group_napcat = FakeNapCat()
+    big_group_napcat.group_member_count = 151
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        big_group_napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    assert not any("回复“在线播放”" in message for _group, message in big_group_napcat.sent)
+
+
+@pytest.mark.asyncio
+async def test_jav_stills_action_is_opt_in(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+    settings = replace(_settings(tmp_path), enable_jav_stills=True, jav_stills_max_count=1)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "剧照"}}]),
+        settings,
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert any("准备发送 1 张剧照" in message for _group, message in napcat.sent)
+    assert ("10001", "IMAGE:https://javdb.com/samples/1.jpg") in napcat.sent
 
 
 @pytest.mark.asyncio

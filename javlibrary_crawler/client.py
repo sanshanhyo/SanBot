@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class JavLibraryCrawlerConfig:
     base_url: str = "https://www.javlibrary.com"
     language: str = "cn"
-    provider_order: tuple[str, ...] = ("javlibrary", "jav321", "javdb", "javbus")
+    provider_order: tuple[str, ...] = ("javdb", "javlibrary", "jav321", "javbus")
     javdb_base_url: str = "https://javdb.com"
     javbus_base_url: str = "https://www.javbus.com"
     jav321_base_url: str = "https://www.jav321.com"

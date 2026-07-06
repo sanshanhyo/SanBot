@@ -1,9 +1,9 @@
 base_url: https://www.javlibrary.com
 language: cn
 provider_order:
+  - javdb
   - javlibrary
   - jav321
-  - javdb
   - javbus
 javdb_base_url: https://javdb.com
 javbus_base_url: https://www.javbus.com

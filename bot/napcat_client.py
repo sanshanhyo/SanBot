@@ -127,6 +127,18 @@ class NapCatClient:
             [{"type": "image", "data": {"file": image_url}}],
         )
 
+    async def send_group_video(self, group_id: str, video_url: str) -> dict[str, Any]:
+        return await self.send_group_msg(
+            group_id,
+            [{"type": "video", "data": {"file": video_url}}],
+        )
+
+    async def get_group_info(self, group_id: str) -> dict[str, Any]:
+        return await self._call_api(
+            "/get_group_info",
+            {"group_id": str(group_id), "no_cache": False},
+        )
+
     async def upload_group_file(self, group_id: str, file_path: str | Path, name: str) -> dict[str, Any]:
         path = Path(file_path).resolve()
         if not path.is_file():

@@ -148,6 +148,11 @@ JAVDB_DETAIL_HTML = """
     <div><strong>類別:</strong><a>Drama</a><a>HD</a></div>
     <a href="/actors/alice">JavDB Alice</a>
     <div class="score-stars">4.8</div>
+    <video id="preview-video" src="/trailers/SSIS-123.mp4"></video>
+    <div class="preview-images">
+      <a href="/samples/SSIS-123-1.jpg"><img src="/thumbs/SSIS-123-1.jpg"></a>
+      <img data-src="/samples/SSIS-123-2.webp">
+    </div>
   </body>
 </html>
 """
@@ -209,7 +214,10 @@ def test_crawler_lookup_uses_search_result_detail() -> None:
             pass
 
     fetcher = FakeFetcher()
-    crawler = JavLibraryCrawler(fetcher=fetcher)  # type: ignore[arg-type]
+    crawler = JavLibraryCrawler(
+        JavLibraryCrawlerConfig(provider_order=("javlibrary",)),
+        fetcher=fetcher,  # type: ignore[arg-type]
+    )
 
     video = crawler.lookup("ssis123")
 
@@ -321,6 +329,12 @@ def test_crawler_parses_javdb_fixture() -> None:
     assert video.actors == ["JavDB Alice"]
     assert video.genres == ["Drama", "HD"]
     assert video.rating == 4.8
+    assert video.trailer_url == "https://javdb.com/trailers/SSIS-123.mp4"
+    assert video.preview_image_urls == [
+        "https://javdb.com/samples/SSIS-123-1.jpg",
+        "https://javdb.com/samples/SSIS-123-2.webp",
+    ]
+    assert video.resource_page_url == "https://javdb.com/v/db123"
     assert fetcher.urls == ["https://javdb.com/search?q=SSIS-123&locale=zh", "https://javdb.com/v/db123"]
 
 

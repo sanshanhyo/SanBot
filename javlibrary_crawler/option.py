@@ -146,7 +146,7 @@ def _resolve_path(value: str | None, base_dir: Path | None) -> str | None:
 
 
 def _provider_order(value: object) -> tuple[str, ...]:
-    default = ("javlibrary", "jav321", "javdb", "javbus")
+    default = ("javdb", "javlibrary", "jav321", "javbus")
     if value is None:
         return default
     if isinstance(value, str):

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -39,6 +39,9 @@ DEFAULT_UPLOAD_RETRIES = 5
 DEFAULT_SEARCH_RESULT_LIMIT = 5
 DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
+DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
+DEFAULT_JAV_STILLS_MAX_COUNT = 3
+DEFAULT_MISSAV_MAX_GROUP_MEMBERS = 150
 COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
 MAX_COVER_IMAGE_BYTES = 8 * 1024 * 1024
@@ -121,6 +124,16 @@ class BotSettings:
     search_confirm_timeout_seconds: int = 600
     ranking_result_limit: int = DEFAULT_RANKING_RESULT_LIMIT
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
+    jav_action_timeout_seconds: int = DEFAULT_JAV_ACTION_TIMEOUT_SECONDS
+    enable_jav_resource_page: bool = True
+    enable_jav_trailer: bool = True
+    enable_jav_stills: bool = False
+    jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
+    jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
+    enable_missav_link: bool = False
+    missav_base_url: str = "https://missav.live"
+    missav_allowed_group_ids: set[str] = field(default_factory=set)
+    missav_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
     manager_qq_ids: set[str] = field(default_factory=set)
     allowed_group_ids: set[str] = field(default_factory=set)
     health_check_interval_seconds: int = 60
@@ -168,6 +181,19 @@ class BotSettings:
                 0,
                 _env_int("USER_COMMAND_COOLDOWN_SECONDS", DEFAULT_USER_COMMAND_COOLDOWN_SECONDS),
             ),
+            jav_action_timeout_seconds=max(30, _env_int("JAV_ACTION_TIMEOUT_SECONDS", DEFAULT_JAV_ACTION_TIMEOUT_SECONDS)),
+            enable_jav_resource_page=_env_bool("ENABLE_JAV_RESOURCE_PAGE", True),
+            enable_jav_trailer=_env_bool("ENABLE_JAV_TRAILER", True),
+            enable_jav_stills=_env_bool("ENABLE_JAV_STILLS", False),
+            jav_stills_max_count=max(1, min(6, _env_int("JAV_STILLS_MAX_COUNT", DEFAULT_JAV_STILLS_MAX_COUNT))),
+            jav_stills_max_group_members=max(
+                0,
+                _env_int("JAV_STILLS_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS),
+            ),
+            enable_missav_link=_env_bool("ENABLE_MISSAV_LINK", False),
+            missav_base_url=(os.getenv("MISSAV_BASE_URL") or "https://missav.live").rstrip("/"),
+            missav_allowed_group_ids=_env_id_set("MISSAV_ALLOWED_GROUP_IDS"),
+            missav_max_group_members=max(0, _env_int("MISSAV_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS)),
             manager_qq_ids=manager_qq_ids,
             allowed_group_ids=_env_id_set("ALLOWED_GROUP_IDS") or _env_id_set("BOT_ALLOWED_GROUP_IDS"),
             health_check_interval_seconds=max(0, _env_int("HEALTH_CHECK_INTERVAL_SECONDS", 60)),
@@ -196,6 +222,15 @@ class PendingSearch:
 
 
 @dataclass(frozen=True)
+class PendingJavActions:
+    code: str
+    title: str
+    payload: dict[str, Any]
+    actions: set[str]
+    expires_at: float
+
+
+@dataclass(frozen=True)
 class UploadingJob:
     job_id: str
     album_id: str
@@ -208,6 +243,7 @@ class UploadingJob:
 class BotState:
     pending_downloads: dict[tuple[str, str], PendingDownload] = field(default_factory=dict)
     pending_searches: dict[tuple[str, str], PendingSearch] = field(default_factory=dict)
+    pending_jav_actions: dict[tuple[str, str], PendingJavActions] = field(default_factory=dict)
     uploading_jobs: dict[str, UploadingJob] = field(default_factory=dict)
     cancelled_uploads: set[str] = field(default_factory=set)
     command_cooldowns: dict[tuple[str, str], float] = field(default_factory=dict)
@@ -227,6 +263,13 @@ class BotState:
         ]
         for key in expired_searches:
             self.pending_searches.pop(key, None)
+        expired_jav_actions = [
+            key
+            for key, pending in self.pending_jav_actions.items()
+            if pending.expires_at <= now
+        ]
+        for key in expired_jav_actions:
+            self.pending_jav_actions.pop(key, None)
 
 
 def _safe_filename(name: str, fallback: str, max_bytes: int = MAX_FILENAME_BYTES) -> str:
@@ -438,6 +481,21 @@ async def handle_group_message(
         )
         return
 
+    pending_jav_action = state.pending_jav_actions.get((group_id, user_id))
+    started = time.monotonic()
+    if await _handle_pending_jav_action(event, group_id, user_id, settings, state, napcat):
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            "jav_action",
+            pending_jav_action.code if pending_jav_action is not None else None,
+            "handled",
+            None,
+            _duration_ms(started),
+        )
+        return
+
     started = time.monotonic()
     if await _handle_active_cancel(event, group_id, user_id, napcat, backend):
         await _record_command_audit(
@@ -591,7 +649,9 @@ async def handle_group_message(
         await _handle_jav_command(
             parse_result.jav_code or "",
             group_id,
+            user_id,
             settings,
+            state,
             napcat,
             backend,
         )
@@ -1167,7 +1227,9 @@ async def _handle_javdb_ranking_command(
 async def _handle_jav_command(
     code: str,
     group_id: str,
+    user_id: str,
     settings: BotSettings,
+    state: BotState,
     napcat: NapCatClient,
     backend: BackendClient,
 ) -> None:
@@ -1184,12 +1246,212 @@ async def _handle_jav_command(
         return
 
     await _safe_send(napcat, group_id, _format_jav_video(payload))
+    actions = await _available_jav_actions(payload, group_id, settings, napcat)
+    if actions:
+        state.pending_jav_actions[(group_id, user_id)] = PendingJavActions(
+            code=str(payload.get("code") or code),
+            title=str(payload.get("title") or payload.get("code") or code),
+            payload=payload,
+            actions=actions,
+            expires_at=asyncio.get_running_loop().time() + settings.jav_action_timeout_seconds,
+        )
+        await _safe_send(napcat, group_id, _format_jav_action_menu(actions))
     cover_url = payload.get("cover_url")
     if isinstance(cover_url, str) and cover_url:
         asyncio.create_task(
             _send_jav_cover(str(payload.get("code") or code), group_id, cover_url, napcat),
             name=f"jav-cover-{payload.get('code') or code}",
         )
+
+
+async def _handle_pending_jav_action(
+    event: dict[str, Any],
+    group_id: str,
+    user_id: str,
+    settings: BotSettings,
+    state: BotState,
+    napcat: NapCatClient,
+) -> bool:
+    pending = state.pending_jav_actions.get((group_id, user_id))
+    if pending is None:
+        return False
+    text = re.sub(r"\s+", "", text_from_segments(event.get("message"))).strip().lower()
+    if not text:
+        return False
+    if text in _cancel_words():
+        state.pending_jav_actions.pop((group_id, user_id), None)
+        await _safe_send(napcat, group_id, lang_text("jav_action_cancelled"))
+        return True
+
+    action = _jav_action_from_text(text)
+    if action is None:
+        return False
+    if action not in pending.actions:
+        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        return True
+
+    if action == "resource":
+        await _send_jav_resource_page(pending.payload, group_id, napcat)
+    elif action == "trailer":
+        await _send_jav_trailer(pending.payload, group_id, napcat)
+    elif action == "stills":
+        await _send_jav_stills(pending.payload, group_id, settings, napcat)
+    elif action == "stream":
+        await _send_missav_link(pending.payload, group_id, settings, napcat)
+    return True
+
+
+async def _available_jav_actions(
+    payload: dict[str, Any],
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> set[str]:
+    actions: set[str] = set()
+    if settings.enable_jav_trailer and _payload_str(payload, "trailer_url"):
+        actions.add("trailer")
+    if settings.enable_jav_stills and _payload_list(payload, "preview_image_urls"):
+        member_count = await _get_group_member_count(group_id, napcat)
+        if (
+            settings.jav_stills_max_group_members <= 0
+            or (member_count is not None and member_count <= settings.jav_stills_max_group_members)
+        ):
+            actions.add("stills")
+    if settings.enable_jav_resource_page and _jav_resource_page_url(payload):
+        actions.add("resource")
+    if await _is_missav_allowed(group_id, settings, napcat):
+        actions.add("stream")
+    return actions
+
+
+def _format_jav_action_menu(actions: set[str]) -> str:
+    lines = [lang_text("jav_action_menu_header")]
+    if "trailer" in actions:
+        lines.append(lang_text("jav_action_menu_trailer"))
+    if "stills" in actions:
+        lines.append(lang_text("jav_action_menu_stills"))
+    if "resource" in actions:
+        lines.append(lang_text("jav_action_menu_resource"))
+    if "stream" in actions:
+        lines.append(lang_text("jav_action_menu_stream"))
+    lines.append(lang_text("jav_action_menu_footer"))
+    return "\n".join(lines)
+
+
+def _jav_action_from_text(text: str) -> str | None:
+    if text in {"预告", "预告片", "trailer", "preview"}:
+        return "trailer"
+    if text in {"剧照", "截图", "样张", "预览图", "图片", "stills", "screenshots"}:
+        return "stills"
+    if text in {"资源", "资源页", "链接", "查看链接", "番号链接", "javdb", "javdb链接", "查看番号"}:
+        return "resource"
+    if text in {"在线播放", "播放", "在线", "在线入口", "missav", "missav入口"}:
+        return "stream"
+    return None
+
+
+async def _send_jav_resource_page(payload: dict[str, Any], group_id: str, napcat: NapCatClient) -> None:
+    url = _jav_resource_page_url(payload)
+    if not url:
+        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        return
+    await _safe_send(napcat, group_id, lang_text("jav_resource_page", url=url))
+
+
+async def _send_jav_trailer(payload: dict[str, Any], group_id: str, napcat: NapCatClient) -> None:
+    trailer_url = _payload_str(payload, "trailer_url")
+    if not trailer_url:
+        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        return
+    try:
+        await napcat.send_group_video(group_id, trailer_url)
+    except NapCatAPIError:
+        logger.warning("Could not send JAV trailer as video; falling back to link.", exc_info=True)
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_link", url=trailer_url))
+
+
+async def _send_jav_stills(
+    payload: dict[str, Any],
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> None:
+    urls = _payload_list(payload, "preview_image_urls")[: settings.jav_stills_max_count]
+    if not urls:
+        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        return
+    await _safe_send(napcat, group_id, lang_text("jav_stills_sending", count=len(urls)))
+    sent_count = 0
+    for url in urls:
+        try:
+            await napcat.send_group_image(group_id, url)
+            sent_count += 1
+        except NapCatAPIError:
+            logger.warning("Could not send JAV still image %s.", url, exc_info=True)
+    if sent_count == 0:
+        await _safe_send(napcat, group_id, lang_text("jav_stills_failed"))
+
+
+async def _send_missav_link(
+    payload: dict[str, Any],
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> None:
+    code = str(payload.get("code") or "").strip().upper()
+    if not code:
+        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        return
+    url = f"{settings.missav_base_url}/{quote(code)}"
+    await _safe_send(napcat, group_id, lang_text("missav_link", code=code, url=url))
+
+
+async def _is_missav_allowed(group_id: str, settings: BotSettings, napcat: NapCatClient) -> bool:
+    if not settings.enable_missav_link:
+        return False
+    if not settings.missav_allowed_group_ids or str(group_id) not in settings.missav_allowed_group_ids:
+        return False
+    if settings.missav_max_group_members <= 0:
+        return True
+    member_count = await _get_group_member_count(group_id, napcat)
+    return member_count is not None and member_count <= settings.missav_max_group_members
+
+
+async def _get_group_member_count(group_id: str, napcat: NapCatClient) -> int | None:
+    try:
+        payload = await napcat.get_group_info(group_id)
+    except NapCatAPIError:
+        logger.warning("Could not get group member count for MissAV visibility check.", exc_info=True)
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    count = data.get("member_count")
+    try:
+        return int(count)
+    except (TypeError, ValueError):
+        return None
+
+
+def _jav_resource_page_url(payload: dict[str, Any]) -> str:
+    resource_url = _payload_str(payload, "resource_page_url")
+    if resource_url:
+        return resource_url
+    source = str(payload.get("source") or "").lower()
+    url = _payload_str(payload, "url")
+    return url if source == "javdb" else ""
+
+
+def _payload_str(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _payload_list(payload: dict[str, Any], key: str) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str) and item.strip()]
 
 
 async def _handle_active_cancel(
@@ -1578,6 +1840,7 @@ def _audit_command_label(command: str) -> str:
         "admin:cancel": "audit_command_admin_cancel",
         "confirm_download": "audit_command_confirm_download",
         "search_select": "audit_command_search_select",
+        "jav_action": "audit_command_jav_action",
         "active_cancel": "audit_command_active_cancel",
         "blocked_group": "audit_command_blocked_group",
         "home": "audit_command_home",

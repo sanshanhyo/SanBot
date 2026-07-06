@@ -176,7 +176,7 @@ class BackendSettings:
             javlibrary_language=os.getenv("JAVLIBRARY_LANGUAGE", "cn"),
             javlibrary_provider_order=_env_csv(
                 "JAVLIBRARY_PROVIDER_ORDER",
-                ("javlibrary", "jav321", "javdb", "javbus"),
+                ("javdb", "javlibrary", "jav321", "javbus"),
             ),
             javdb_base_url=os.getenv("JAVDB_BASE_URL", "https://javdb.com"),
             javbus_base_url=os.getenv("JAVBUS_BASE_URL", "https://www.javbus.com"),

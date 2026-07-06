@@ -12,6 +12,7 @@
 - 默认开启 JM 关键词搜索：`@机器人 JM搜索 关键词`，用户回复序号后进入同一套预览确认流程。
 - 支持 JavDB 标题搜索：`@机器人 AV搜索 中文标题`，以及演员搜索：`@机器人 演员搜索 演员名`。
 - 支持 `JM日榜` / `JM周榜` / `JM月榜` 和 `DB日榜` / `DB周榜` / `DB月榜`。
+- 番号查询后可按配置查看 JavDB 资源页、预告片、少量剧照和白名单外部播放入口。
 - 单独 `@机器人` 会显示机器人介绍；`@机器人 帮助` 和 `@机器人 功能` 会显示使用说明和功能列表。
 - 支持任务历史查询：用户可查自己的最近任务，群管理员可查本群最近任务。
 - 一条消息只允许一个编号。
@@ -121,7 +122,7 @@ JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS=120
 JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS=60
 JAVLIBRARY_BASE_URL=https://www.javlibrary.com
 JAVLIBRARY_LANGUAGE=cn
-JAVLIBRARY_PROVIDER_ORDER=javlibrary,jav321,javdb,javbus
+JAVLIBRARY_PROVIDER_ORDER=javdb,javlibrary,jav321,javbus
 JAVDB_BASE_URL=https://javdb.com
 JAVBUS_BASE_URL=https://www.javbus.com
 JAV321_BASE_URL=https://www.jav321.com
@@ -139,6 +140,16 @@ JAV_ACTOR_ALIAS_PATH=./config/actor-aliases.yml
 JAV_ACTOR_ALIAS_ONLINE=true
 JAV_ACTOR_ALIAS_TIMEOUT_SECONDS=4
 JAV_ACTOR_ALIAS_CANDIDATE_LIMIT=6
+JAV_ACTION_TIMEOUT_SECONDS=300
+ENABLE_JAV_RESOURCE_PAGE=true
+ENABLE_JAV_TRAILER=true
+ENABLE_JAV_STILLS=false
+JAV_STILLS_MAX_COUNT=3
+JAV_STILLS_MAX_GROUP_MEMBERS=150
+ENABLE_MISSAV_LINK=false
+MISSAV_BASE_URL=https://missav.live
+MISSAV_ALLOWED_GROUP_IDS=
+MISSAV_MAX_GROUP_MEMBERS=150
 MAX_CONCURRENT_JOBS=1
 MAX_ACTIVE_JOBS_PER_GROUP=3
 MAX_ACTIVE_JOBS_PER_USER=1
@@ -204,7 +215,7 @@ DATA_DIR=./data
 | `JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS` | 数据源超时时的失败缓存时间，默认 `60` 秒 |
 | `JAVLIBRARY_BASE_URL` | Javlibrary 源站地址，默认 `https://www.javlibrary.com` |
 | `JAVLIBRARY_LANGUAGE` | Javlibrary 语言路径，默认 `cn` |
-| `JAVLIBRARY_PROVIDER_ORDER` | 番号数据源尝试顺序，默认 `javlibrary,jav321,javdb,javbus` |
+| `JAVLIBRARY_PROVIDER_ORDER` | 番号数据源尝试顺序，默认 `javdb,javlibrary,jav321,javbus` |
 | `JAVDB_BASE_URL` | JavDB 源站地址，默认 `https://javdb.com` |
 | `JAVBUS_BASE_URL` | JavBus 源站地址，默认 `https://www.javbus.com` |
 | `JAV321_BASE_URL` | Jav321 源站地址，默认 `https://www.jav321.com` |
@@ -222,6 +233,16 @@ DATA_DIR=./data
 | `JAV_ACTOR_ALIAS_ONLINE` | 演员搜索是否启用在线别名解析，默认 `true` |
 | `JAV_ACTOR_ALIAS_TIMEOUT_SECONDS` | 在线别名解析超时时间，默认 `4` 秒 |
 | `JAV_ACTOR_ALIAS_CANDIDATE_LIMIT` | 单次演员搜索最多尝试的候选名数量，默认 `6` |
+| `JAV_ACTION_TIMEOUT_SECONDS` | 番号查询后等待用户回复操作的时间，默认 `300` 秒 |
+| `ENABLE_JAV_RESOURCE_PAGE` | 是否允许回复“资源页”查看 JavDB 外部页面，默认 `true` |
+| `ENABLE_JAV_TRAILER` | 是否允许回复“预告片”发送预告片，默认 `true` |
+| `ENABLE_JAV_STILLS` | 是否允许回复“剧照”发送少量剧照，默认 `false` |
+| `JAV_STILLS_MAX_COUNT` | 每次最多发送剧照数量，默认 `3`，最大 `6` |
+| `JAV_STILLS_MAX_GROUP_MEMBERS` | 剧照入口允许的最大群人数，默认 `150`；超过会隐藏 |
+| `ENABLE_MISSAV_LINK` | 是否显示外部播放入口，默认 `false` |
+| `MISSAV_BASE_URL` | 外部播放入口基础地址，默认 `https://missav.live` |
+| `MISSAV_ALLOWED_GROUP_IDS` | 外部播放入口白名单群号，逗号分隔；未配置时不显示 |
+| `MISSAV_MAX_GROUP_MEMBERS` | 外部播放入口允许的最大群人数，默认 `150`；超过会强制隐藏 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `MAX_ACTIVE_JOBS_PER_GROUP` | 每个群允许同时存在的活跃任务数，默认 `3` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 每个用户允许同时存在的活跃任务数，默认 `1` |
@@ -342,7 +363,7 @@ javlibrary SSIS-123
 javlibrary SSIS-123 --json
 javv FC2-PPV-1234567 -o ./config/javlibrary-option.yml
 javlibrary SSIS-123 -o ./config/javlibrary-option.yml --fetcher curl
-javlibrary SSIS-123 --providers jav321,javdb,javbus --timeout 8 --total-timeout 15
+javlibrary SSIS-123 --providers javdb,javlibrary,jav321,javbus --timeout 8 --total-timeout 15
 python -m javlibrary_crawler SSIS-123
 ```
 
@@ -352,7 +373,7 @@ python -m javlibrary_crawler SSIS-123
 | --- | --- |
 | `--json` | 输出 JSON，方便脚本读取 |
 | `-o, --option` | 指定配置文件，支持 YAML、JSON、TOML |
-| `--providers` | 指定数据源顺序，例如 `jav321,javdb,javbus` |
+| `--providers` | 指定数据源顺序，例如 `javdb,javlibrary,jav321,javbus` |
 | `--timeout` | 单个请求超时秒数 |
 | `--total-timeout` | 整次查询总超时秒数 |
 | `--proxy` | 指定 HTTP 代理，例如 `http://127.0.0.1:7890` |
@@ -402,7 +423,7 @@ browser:
 ```
 
 命令行参数会覆盖环境变量和配置文件。遇到源站阻断时会返回 `JAV_SOURCE_BLOCKED`，查询超时返回 `JAV_FETCH_TIMEOUT`，未找到返回 `JAV_NOT_FOUND`。
-默认的 `curl` 模式参考 `jmcomic` 和 MDCX 的网络层思路，使用 `curl-cffi` 发起请求并支持浏览器指纹候选、Cookie、代理、保守重试和失败缓存。查询时会按 `provider_order` 依次尝试 Javlibrary、Jav321、JavDB、JavBus，先返回第一个成功的数据源。`browser` 模式只作为备用调试手段；它首次验证更适合在 Windows 桌面或有图形界面的主机上完成，纯 Docker/SSH 服务器通常没有可见浏览器窗口。
+默认的 `curl` 模式参考 `jmcomic` 和 MDCX 的网络层思路，使用 `curl-cffi` 发起请求并支持浏览器指纹候选、Cookie、代理、保守重试和失败缓存。查询时会按 `provider_order` 依次尝试 JavDB、Javlibrary、Jav321、JavBus，先返回第一个成功的数据源。`browser` 模式只作为备用调试手段；它首次验证更适合在 Windows 桌面或有图形界面的主机上完成，纯 Docker/SSH 服务器通常没有可见浏览器窗口。
 
 群内使用示例：
 
@@ -446,7 +467,18 @@ browser:
 @机器人 番号 FC2-PPV-1234567
 ```
 
-结果会包含标题、发行日期、时长、制作商、演员、类别、评分、链接和封面。查询结果会缓存到 SQLite，源站阻断、超时或未找到时会返回错误码。
+结果会包含标题、发行日期、时长、制作商、演员、类别、评分、链接和封面。默认优先使用 JavDB，Javlibrary、Jav321、JavBus 会作为 fallback。查询结果会缓存到 SQLite，源站阻断、超时或未找到时会返回错误码。
+
+如果源站提供对应数据，番号查询后还可以直接回复：
+
+```text
+预告片
+资源页
+剧照
+在线播放
+```
+
+`预告片` 默认开启，会尝试发送 JavDB 预告片；`资源页` 默认开启，只发送 JavDB 外部页面链接，不展开磁力；`剧照` 默认关闭，开启后每次最多发送 `JAV_STILLS_MAX_COUNT` 张，群人数超过 `JAV_STILLS_MAX_GROUP_MEMBERS` 时会隐藏；`在线播放` 默认关闭，必须配置 `ENABLE_MISSAV_LINK=true` 且群号在 `MISSAV_ALLOWED_GROUP_IDS` 内，群人数超过 `MISSAV_MAX_GROUP_MEMBERS` 时会强制隐藏入口。外部页面与播放入口均会附带合规和版权提示。
 
 JavDB 搜索和排行榜只返回公开元数据列表，不下载视频：
 

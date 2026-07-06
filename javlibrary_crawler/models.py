@@ -35,6 +35,9 @@ class JavLibraryVideo:
     actors: list[str] = field(default_factory=list)
     genres: list[str] = field(default_factory=list)
     rating: float | None = None
+    trailer_url: str | None = None
+    preview_image_urls: list[str] = field(default_factory=list)
+    resource_page_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
