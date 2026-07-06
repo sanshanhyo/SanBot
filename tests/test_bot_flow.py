@@ -46,13 +46,23 @@ class FakeCreateBackend:
         self.previewed: list[str] = []
         self.searches: list[tuple[str, int, int]] = []
         self.rankings: list[tuple[str, int, int]] = []
+        self.av_searches: list[tuple[str, int, int]] = []
+        self.db_rankings: list[tuple[str, int, int]] = []
         self.jav_queries: list[str] = []
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
         self.cancelled_active: list[tuple[str, str]] = []
+        self.audit_events: list[dict] = []
         self.active_job: dict | None = None
         self.page_count = page_count
+
+    async def health(self) -> dict:
+        return {"status": "ok"}
+
+    async def create_audit_event(self, payload: dict) -> dict:
+        self.audit_events.append(payload)
+        return {"event": payload}
 
     async def get_active_job(self, group_id: str, user_id: str) -> dict | None:
         self.active_queries.append((group_id, user_id))
@@ -95,6 +105,43 @@ class FakeCreateBackend:
             "results": [
                 {"rank": 1, "album_id": "111111", "title": "First Ranking Hit", "tags": []},
                 {"rank": 2, "album_id": "222222", "title": "Second Ranking Hit", "tags": []},
+            ],
+        }
+
+    async def search_jav_videos(self, query: str, page: int = 1, limit: int = 5) -> dict:
+        self.av_searches.append((query, page, limit))
+        return {
+            "query": query,
+            "page": page,
+            "total": 2,
+            "results": [
+                {
+                    "code": "SSIS-123",
+                    "title": "A Chinese Title",
+                    "url": "https://javdb.com/v/abc",
+                    "source": "javdb",
+                    "actors": ["三上悠亚"],
+                },
+                {
+                    "code": "ABP-456",
+                    "title": "Another Chinese Title",
+                    "url": "https://javdb.com/v/def",
+                    "source": "javdb",
+                    "actors": [],
+                },
+            ],
+        }
+
+    async def get_javdb_ranking(self, period: str, page: int = 1, limit: int = 10) -> dict:
+        self.db_rankings.append((period, page, limit))
+        return {
+            "period": period,
+            "period_label": {"day": "日榜", "week": "周榜", "month": "月榜"}[period],
+            "page": page,
+            "total": 2,
+            "results": [
+                {"rank": 1, "code": "SSIS-123", "title": "First DB Hit", "source": "javdb", "actors": ["三上悠亚"]},
+                {"rank": 2, "code": "ABP-456", "title": "Second DB Hit", "source": "javdb", "actors": []},
             ],
         }
 
@@ -155,6 +202,23 @@ class FakeCreateBackend:
                     "status": "downloading",
                     "downloaded_files": 50,
                     "total_files": 100,
+                }
+            ]
+        }
+
+    async def get_admin_audit(self, group_id: str | None = None, limit: int = 20) -> dict:
+        return {
+            "events": [
+                {
+                    "id": 1,
+                    "created_at": "2026-07-06T12:00:00+00:00",
+                    "group_id": group_id or "10001",
+                    "user_id": "20001",
+                    "command": "ok",
+                    "target": "JM123456",
+                    "status": "received",
+                    "error_code": None,
+                    "duration_ms": 0,
                 }
             ]
         }
@@ -344,6 +408,32 @@ async def test_empty_at_sends_home_message(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_group_whitelist_blocks_unlisted_group(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(_settings(tmp_path), allowed_group_ids={"99999"})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent == []
+    assert backend.previewed == []
+    assert backend.audit_events[-1]["command"] == "blocked_group"
+    assert backend.audit_events[-1]["error_code"] == "GROUP_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
 async def test_help_and_features_commands(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
@@ -460,7 +550,7 @@ async def test_ranking_command_sends_ranking_results(tmp_path: Path) -> None:
         _group_event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 今日排行榜"}},
+                {"type": "text", "data": {"text": " JM日榜"}},
             ]
         ),
         _settings(tmp_path),
@@ -496,13 +586,63 @@ async def test_jav_command_sends_video_metadata(tmp_path: Path) -> None:
         TaskCollector(),
     )
 
-    assert backend.jav_queries == ["ssis123"]
+    assert backend.jav_queries == ["SSIS123"]
     assert napcat.sent[0] == ("10001", "正在查询 SSIS123 的番号信息，稍等一下……")
     assert "番号信息：SSIS-123" in napcat.sent[1][1]
     assert "标题：SSIS-123 A Sample Title" in napcat.sent[1][1]
     assert "演员：Alice / Bob" in napcat.sent[1][1]
     await asyncio.sleep(0)
     assert napcat.sent[-1] == ("10001", "IMAGE:https://example.test/jav-cover.jpg")
+
+
+@pytest.mark.asyncio
+async def test_av_search_command_sends_javdb_results(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " AV搜索 三上悠亚"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.av_searches == [("三上悠亚", 1, 5)]
+    assert napcat.sent[0] == ("10001", "正在搜索 AV “三上悠亚”，稍等一下下……")
+    assert "AV 搜索结果：三上悠亚" in napcat.sent[1][1]
+    assert "SSIS-123 A Chinese Title 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
+
+
+@pytest.mark.asyncio
+async def test_db_ranking_command_sends_javdb_ranking(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " DB日榜"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.db_rankings == [("day", 1, 10)]
+    assert napcat.sent[0] == ("10001", "正在获取 JavDB 日榜，稍等一下下……")
+    assert "JavDB 日榜" in napcat.sent[1][1]
+    assert "1. SSIS-123 First DB Hit 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
 
 
 @pytest.mark.asyncio
@@ -655,7 +795,7 @@ async def test_search_command_can_be_disabled_by_config(tmp_path: Path) -> None:
         _group_event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 搜索 戦乙女"}},
+                {"type": "text", "data": {"text": " JM搜索 戦乙女"}},
             ]
         ),
         _settings(tmp_path, enable_search=False),
@@ -682,7 +822,7 @@ async def test_search_result_selection_sends_album_preview(tmp_path: Path) -> No
         _group_event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 搜索 戦乙女"}},
+                {"type": "text", "data": {"text": " JM搜索 戦乙女"}},
             ]
         ),
         settings,
@@ -904,6 +1044,31 @@ async def test_group_admin_can_query_queue(tmp_path: Path) -> None:
 
     assert "当前队列" in napcat.sent[-1][1]
     assert "JM123456 下载中（50%）" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_group_admin_can_query_audit_log(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 审计"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "本群最近命令审计" in napcat.sent[-1][1]
+    assert "JM 预览 已接收 用户：20001 目标：JM123456" in napcat.sent[-1][1]
+    assert backend.audit_events[-1]["command"] == "admin:audit"
 
 
 @pytest.mark.asyncio

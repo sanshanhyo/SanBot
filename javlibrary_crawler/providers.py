@@ -208,6 +208,22 @@ class JavDbProvider(BaseProvider):
         detail_url = self._pick_detail_url(response.text, response.url, code)
         return self._parse_detail(self.fetcher.get(detail_url).text, detail_url, code)
 
+    def search(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        base = self.config.javdb_base_url.rstrip("/")
+        search_url = f"{base}/search?q={quote(query)}&f=all&locale=zh&page={max(1, page)}"
+        response = self.fetcher.get(search_url)
+        return self._parse_cards(response.text, response.url, limit=limit)
+
+    def ranking(self, period: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        period_value = {"day": "daily", "week": "weekly", "month": "monthly"}.get(period)
+        if period_value is None:
+            raise JavLibraryNotFoundError("JavDB 排行榜类型无效")
+        base = self.config.javdb_base_url.rstrip("/")
+        ranking_url = f"{base}/rankings/movies?period={period_value}&locale=zh&page={max(1, page)}"
+        response = self.fetcher.get(ranking_url)
+        items = self._parse_cards(response.text, response.url, limit=limit)
+        return [replace(item, rank=index) for index, item in enumerate(items, start=(max(1, page) - 1) * limit + 1)]
+
     def _pick_detail_url(self, html: str, page_url: str, code: str) -> str:
         root = parse_document(html)
         clean_code = _clean_code(code)
@@ -224,6 +240,37 @@ class JavDbProvider(BaseProvider):
         if fallback:
             return fallback
         raise JavLibraryNotFoundError(f"没有找到 {code} 的 JavDB 条目")
+
+    def _parse_cards(self, html: str, page_url: str, limit: int) -> list[JavLibrarySearchItem]:
+        root = parse_document(html)
+        items: list[JavLibrarySearchItem] = []
+        for link in root.find_all(tag="a", class_="box"):
+            href = link.attrs.get("href", "")
+            url = _absolute_url(href, page_url)
+            if not url:
+                continue
+            code = _code_from_text(link.text()) or _code_from_text(url)
+            if not code:
+                continue
+            normalized = _normalize_or_default(code, code.upper())
+            title = _javdb_card_title(link, normalized)
+            cover_url = _absolute_url(_first_attr(link, tag="img", attr="src"), page_url)
+            actors = _javdb_card_actors(link)
+            release_date = _javdb_card_date(link)
+            items.append(
+                JavLibrarySearchItem(
+                    code=normalized,
+                    title=title or normalized,
+                    url=url,
+                    cover_url=cover_url,
+                    source=self.source,
+                    release_date=release_date,
+                    actors=actors,
+                )
+            )
+            if len(items) >= limit:
+                break
+        return items
 
     def _parse_detail(self, html: str, url: str, expected_code: str) -> JavLibraryVideo:
         root = parse_document(html)
@@ -419,3 +466,31 @@ def _link_href_by_text(root: Node, labels: list[str]) -> str | None:
         if any(label in text for label in labels):
             return link.attrs.get("href")
     return None
+
+
+def _javdb_card_title(card: Node, code: str) -> str:
+    title = _first_text(card, class_="video-title") or _first_text(card, class_="title") or card.text()
+    title = clean_text(title)
+    return _strip_code_from_title(title, code) or title
+
+
+def _javdb_card_actors(card: Node) -> list[str]:
+    values: list[str] = []
+    for node in card.find_all(class_="meta"):
+        text = node.text()
+        if not text:
+            continue
+        for value in _split_names(text):
+            if _code_from_text(value):
+                continue
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                continue
+            if value and value not in values:
+                values.append(value)
+    return values[:6]
+
+
+def _javdb_card_date(card: Node) -> str | None:
+    text = card.text()
+    match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    return match.group(1) if match else None

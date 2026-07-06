@@ -6,24 +6,20 @@ from enum import StrEnum
 from typing import Any
 
 ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
-SEARCH_PATTERN = re.compile(r"^\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
+JM_SEARCH_PATTERN = re.compile(r"(?i)^\s*JM\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
+AV_SEARCH_PATTERN = re.compile(r"(?i)^\s*(?:AV|DB)\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
 JAV_PATTERN = re.compile(
     r"(?i)^\s*(?:JAV|番号|AV)\s+([A-Z]{2,12}[-_\s]?\d{2,8}[A-Z]?|FC2(?:[-_\s]?PPV)?[-_\s]?\d{3,10})\s*$"
 )
-RANKING_ALIASES = {
-    "日榜": "day",
-    "今日榜": "day",
-    "今日排行榜": "day",
-    "今天榜": "day",
-    "今天排行榜": "day",
-    "周榜": "week",
-    "本周榜": "week",
-    "本周排行榜": "week",
-    "周排行榜": "week",
-    "月榜": "month",
-    "本月榜": "month",
-    "本月排行榜": "month",
-    "月排行榜": "month",
+JM_RANKING_ALIASES = {
+    "JM日榜": "day",
+    "JM周榜": "week",
+    "JM月榜": "month",
+}
+DB_RANKING_ALIASES = {
+    "DB日榜": "day",
+    "DB周榜": "week",
+    "DB月榜": "month",
 }
 CQ_CODE_PATTERN = re.compile(r"\[CQ:([a-zA-Z0-9_]+)((?:,[^\]]*)?)\]")
 
@@ -39,6 +35,8 @@ class ParseAction(StrEnum):
     OK = "ok"
     SEARCH = "search"
     RANKING = "ranking"
+    AV_SEARCH = "av_search"
+    DB_RANKING = "db_ranking"
     JAV = "jav"
     ERROR = "error"
 
@@ -49,6 +47,7 @@ class ParseResult:
     album_id: str | None = None
     search_query: str | None = None
     ranking_period: str | None = None
+    db_ranking_period: str | None = None
     jav_code: str | None = None
     error_key: str | None = None
 
@@ -132,29 +131,40 @@ def extract_album_id(message_segments: Any) -> tuple[str | None, str | None]:
     return matches[0], None
 
 
-def extract_search_query(message_segments: Any) -> tuple[str | None, str | None]:
+def extract_jm_search_query(message_segments: Any) -> tuple[str | None, str | None]:
     text = text_from_segments(message_segments)
-    match = SEARCH_PATTERN.match(text)
+    match = JM_SEARCH_PATTERN.match(text)
     if match is None:
         return None, None
     query = re.sub(r"\s+", " ", match.group(1)).strip()
     if not query:
-        return None, "search_usage"
+        return None, "jm_search_usage"
     if len(query) > 40:
         return None, "search_query_too_long"
     return query, None
 
 
-def extract_ranking_period(message_segments: Any) -> str | None:
+def extract_av_search_query(message_segments: Any) -> tuple[str | None, str | None]:
+    text = text_from_segments(message_segments)
+    match = AV_SEARCH_PATTERN.match(text)
+    if match is None:
+        return None, None
+    query = re.sub(r"\s+", " ", match.group(1)).strip()
+    if not query:
+        return None, "av_search_usage"
+    if len(query) > 60:
+        return None, "av_search_query_too_long"
+    return query, None
+
+
+def extract_jm_ranking_period(message_segments: Any) -> str | None:
     text = re.sub(r"\s+", "", text_from_segments(message_segments)).strip()
-    lowered = text.lower()
-    if lowered in {"dayranking", "dailyranking"}:
-        return "day"
-    if lowered in {"weekranking", "weeklyranking"}:
-        return "week"
-    if lowered in {"monthranking", "monthlyranking"}:
-        return "month"
-    return RANKING_ALIASES.get(text)
+    return JM_RANKING_ALIASES.get(text.upper())
+
+
+def extract_db_ranking_period(message_segments: Any) -> str | None:
+    text = re.sub(r"\s+", "", text_from_segments(message_segments)).strip()
+    return DB_RANKING_ALIASES.get(text.upper())
 
 
 def extract_jav_code(message_segments: Any) -> str | None:
@@ -162,7 +172,7 @@ def extract_jav_code(message_segments: Any) -> str | None:
     match = JAV_PATTERN.match(text)
     if match is None:
         return None
-    return re.sub(r"\s+", "", match.group(1)).strip()
+    return re.sub(r"\s+", "", match.group(1)).strip().upper()
 
 
 def extract_control_action(message_segments: Any) -> ParseAction | None:
@@ -193,15 +203,25 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     if not has_at_bot(message_segments, bot_qq_id):
         return ParseResult(ParseAction.IGNORE)
 
-    search_query, search_error = extract_search_query(message_segments)
+    search_query, search_error = extract_jm_search_query(message_segments)
     if search_error:
         return ParseResult(ParseAction.ERROR, error_key=search_error)
     if search_query is not None:
         return ParseResult(ParseAction.SEARCH, search_query=search_query)
 
-    ranking_period = extract_ranking_period(message_segments)
+    av_search_query, av_search_error = extract_av_search_query(message_segments)
+    if av_search_error:
+        return ParseResult(ParseAction.ERROR, error_key=av_search_error)
+    if av_search_query is not None:
+        return ParseResult(ParseAction.AV_SEARCH, search_query=av_search_query)
+
+    ranking_period = extract_jm_ranking_period(message_segments)
     if ranking_period is not None:
         return ParseResult(ParseAction.RANKING, ranking_period=ranking_period)
+
+    db_ranking_period = extract_db_ranking_period(message_segments)
+    if db_ranking_period is not None:
+        return ParseResult(ParseAction.DB_RANKING, db_ranking_period=db_ranking_period)
 
     jav_code = extract_jav_code(message_segments)
     if jav_code is not None:

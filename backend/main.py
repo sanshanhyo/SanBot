@@ -18,11 +18,16 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from .audit_log import AuditLog, AuditLogConfig
 from .models import (
     AlbumPreviewResponse,
     AlbumRankingResponse,
     AlbumSearchRequest,
     AlbumSearchResponse,
+    CommandAuditCreate,
+    JavRankingResponse,
+    JavSearchRequest,
+    JavSearchResponse,
     JavVideoResponse,
     JobCreate,
     JobCreateResponse,
@@ -98,6 +103,7 @@ class BackendSettings:
     job_cache_ttl_seconds: int
     bot_download_cache_ttl_seconds: int
     preview_cache_ttl_seconds: int
+    audit_retention_days: int
     backend_api_token: str | None
     enable_search: bool
     search_timeout_seconds: int
@@ -147,6 +153,7 @@ class BackendSettings:
             job_cache_ttl_seconds=max(0, _env_int("JOB_CACHE_TTL_SECONDS", 259200)),
             bot_download_cache_ttl_seconds=max(0, _env_int("BOT_DOWNLOAD_CACHE_TTL_SECONDS", 259200)),
             preview_cache_ttl_seconds=max(0, _env_int("PREVIEW_CACHE_TTL_SECONDS", 86400)),
+            audit_retention_days=max(0, _env_int("AUDIT_RETENTION_DAYS", 30)),
             backend_api_token=os.getenv("BACKEND_API_TOKEN") or None,
             enable_search=_env_bool("ENABLE_SEARCH", True),
             search_timeout_seconds=max(1, _env_int("SEARCH_TIMEOUT_SECONDS", 20)),
@@ -157,7 +164,7 @@ class BackendSettings:
             javlibrary_timeout_seconds=max(1, _env_int("JAVLIBRARY_TIMEOUT_SECONDS", 8)),
             javlibrary_total_timeout_seconds=max(1, _env_int("JAVLIBRARY_TOTAL_TIMEOUT_SECONDS", 15)),
             javlibrary_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_CACHE_TTL_SECONDS", 604800)),
-            javlibrary_failure_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS", 600)),
+            javlibrary_failure_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS", 60)),
             javlibrary_not_found_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS", 86400)),
             javlibrary_blocked_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS", 120)),
             javlibrary_timeout_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS", 60)),
@@ -212,6 +219,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.settings = settings
     app.state.job_manager = manager
+    audit_log = AuditLog(AuditLogConfig(data_dir=settings.data_dir, retention_days=settings.audit_retention_days))
+    audit_log.initialize()
+    app.state.audit_log = audit_log
     javlibrary_service = JavLibraryService(
         JavLibraryServiceConfig(
             data_dir=settings.data_dir,
@@ -258,6 +268,10 @@ def _manager(request: Request) -> JobManager:
 
 def _javlibrary_service(request: Request) -> JavLibraryService:
     return request.app.state.javlibrary_service
+
+
+def _audit_log(request: Request) -> AuditLog:
+    return request.app.state.audit_log
 
 
 def _require_api_token(request: Request, authorization: str | None) -> None:
@@ -473,6 +487,64 @@ async def get_jav_video(
         ) from exc
 
     return JavVideoResponse(**payload)
+
+
+@app.post("/api/jav/search", response_model=JavSearchResponse)
+async def search_jav_videos(
+    payload: JavSearchRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JavSearchResponse:
+    _require_api_token(request, authorization)
+    settings: BackendSettings = request.app.state.settings
+    if not settings.enable_javlibrary:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="番号信息查询功能未启用")
+
+    limit = min(payload.limit, settings.search_result_limit)
+    try:
+        result = await asyncio.to_thread(
+            _javlibrary_service(request).search_videos,
+            payload.query,
+            page=payload.page,
+            limit=limit,
+        )
+    except JavLibraryServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"message": exc.user_message, "error_code": exc.error_code},
+        ) from exc
+    return JavSearchResponse(**result)
+
+
+@app.get("/api/javdb/rankings/{period}", response_model=JavRankingResponse)
+async def get_javdb_ranking(
+    period: str,
+    request: Request,
+    page: int = Query(default=1, ge=1, le=5),
+    limit: int = Query(default=10, ge=1, le=20),
+    authorization: str | None = Header(default=None),
+) -> JavRankingResponse:
+    _require_api_token(request, authorization)
+    settings: BackendSettings = request.app.state.settings
+    if not settings.enable_javlibrary:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="番号信息查询功能未启用")
+    if period not in {"day", "week", "month"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid ranking period")
+
+    limit = min(limit, settings.ranking_result_limit)
+    try:
+        result = await asyncio.to_thread(
+            _javlibrary_service(request).get_javdb_ranking,
+            period,
+            page=page,
+            limit=limit,
+        )
+    except JavLibraryServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"message": exc.user_message, "error_code": exc.error_code},
+        ) from exc
+    return JavRankingResponse(**result)
 
 
 async def _run_preview_worker(
@@ -699,6 +771,31 @@ async def admin_group_history(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid group_id")
     jobs = await asyncio.to_thread(_manager(request).list_group_history, group_id, limit)
     return {"jobs": jobs}
+
+
+@app.post("/api/audit/events")
+async def create_audit_event(
+    payload: CommandAuditCreate,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    _require_api_token(request, authorization)
+    event = await asyncio.to_thread(_audit_log(request).record_event, **payload.model_dump())
+    return {"event": event}
+
+
+@app.get("/api/admin/audit")
+async def admin_audit(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    group_id: str | None = None,
+    limit: int = 20,
+) -> dict:
+    _require_api_token(request, authorization)
+    if group_id is not None and not group_id.isdigit():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid group_id")
+    events = await asyncio.to_thread(_audit_log(request).list_events, group_id=group_id, limit=limit)
+    return {"events": events}
 
 
 @app.post("/api/admin/cache/cleanup")

@@ -9,7 +9,9 @@
 - 只处理 QQ 群消息。
 - 使用 OneBot 11 结构化消息段判断是否真的 `@` 了机器人。
 - 支持 `JM123456`、`jm123456` 两种输入；纯数字不会触发下载。
-- 默认开启关键词搜索：`@机器人 搜索 关键词`，用户回复序号后进入同一套预览确认流程。
+- 默认开启 JM 关键词搜索：`@机器人 JM搜索 关键词`，用户回复序号后进入同一套预览确认流程。
+- 支持 JavDB 标题/演员搜索：`@机器人 AV搜索 中文标题或演员名`。
+- 支持 `JM日榜` / `JM周榜` / `JM月榜` 和 `DB日榜` / `DB周榜` / `DB月榜`。
 - 单独 `@机器人` 会显示机器人介绍；`@机器人 帮助` 和 `@机器人 功能` 会显示使用说明和功能列表。
 - 支持任务历史查询：用户可查自己的最近任务，群管理员可查本群最近任务。
 - 一条消息只允许一个编号。
@@ -17,7 +19,9 @@
 - 如果预览检测到页数超过阈值，用户需要二次确认后才会开始下载。
 - 同一群内同一用户同时只能有一个排队中、下载中或转换中的任务。
 - 每个用户默认最多 1 个活跃任务，每个群默认最多 3 个活跃任务。
-- 群主、群管理员和机器人管理者可以查询状态、队列和取消任务；清理缓存只允许机器人管理者执行。
+- 群主、群管理员和机器人管理者可以查询状态、队列、审计日志和取消任务；清理缓存只允许机器人管理者执行。
+- 可配置群白名单；默认不配置时，机器人仍然可在加入的群内使用。
+- Bot 会定期检查后端健康状态，服务异常和恢复时可通知指定群。
 - 下载任务写入 SQLite，服务重启后不会只依赖内存状态。
 - 后端控制台会显示下载进度条；如果预览拿到了页数，会显示百分比和 `已下载/总页数`。
 - 群内只发送关键状态，不会按“已保存 N 张图片”频繁刷屏。
@@ -28,7 +32,7 @@
 - PDF 过大时会自动拆分为多个分卷 PDF 上传，分卷文件名使用 `JM123456_part01-of03.pdf`，方便在 QQ 群文件列表里识别。
 - 上传失败会按配置重试，默认最多重试 5 次。
 - 后端会定期清理过期缓存；Bot 上传成功后也会清理本次上传缓存，避免 `data/` 目录无限增长。
-- Bot 群内文案集中放在 `lang/zh_CN.json`，后续维护提示语不用翻代码。
+- Bot 群内文案集中放在 `i18n/zh_CN.json`，后续维护提示语不用翻代码。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
 
 ## 环境要求
@@ -91,10 +95,14 @@ NAPCAT_MAX_UPLOAD_BYTES=104857600
 NAPCAT_MAX_UPLOAD_FILENAME_BYTES=96
 NAPCAT_UPLOAD_RETRIES=5
 BOT_LANG=zh_CN
-BOT_DISPLAY_NAME=JMComic QQBot
+BOT_I18N_DIR=
+BOT_DISPLAY_NAME=SanBot
 BOT_MANAGER_NAME=
 BOT_MANAGER_QQ=
 BOT_MANAGER_QQ_IDS=
+ALLOWED_GROUP_IDS=
+HEALTH_CHECK_INTERVAL_SECONDS=60
+HEALTH_NOTIFY_GROUP_IDS=
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_API_TOKEN=
 ENABLE_SEARCH=true
@@ -107,7 +115,7 @@ ENABLE_JAVLIBRARY=true
 JAVLIBRARY_TIMEOUT_SECONDS=8
 JAVLIBRARY_TOTAL_TIMEOUT_SECONDS=15
 JAVLIBRARY_CACHE_TTL_SECONDS=604800
-JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS=600
+JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS=60
 JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS=86400
 JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS=120
 JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS=60
@@ -143,6 +151,7 @@ CACHE_CLEANUP_INTERVAL_SECONDS=3600
 JOB_CACHE_TTL_SECONDS=259200
 BOT_DOWNLOAD_CACHE_TTL_SECONDS=259200
 PREVIEW_CACHE_TTL_SECONDS=86400
+AUDIT_RETENTION_DAYS=30
 JM_DOWNLOAD_IMAGE_THREADS=8
 JM_DOWNLOAD_PHOTO_THREADS=2
 JM_DOWNLOAD_MAX_IMAGE_THREADS=8
@@ -164,11 +173,15 @@ DATA_DIR=./data
 | `NAPCAT_MAX_UPLOAD_BYTES` | 单个上传文件大小上限，超过会自动拆分 PDF；默认 `104857600`，即 100MB |
 | `NAPCAT_MAX_UPLOAD_FILENAME_BYTES` | 上传到 QQ 群文件时使用的展示文件名字节上限，默认 `96` |
 | `NAPCAT_UPLOAD_RETRIES` | 单个文件上传失败后的重试次数，默认 `5` |
-| `BOT_LANG` | Bot 群内提示语言文件，默认 `zh_CN`，对应 `lang/zh_CN.json` |
+| `BOT_LANG` | Bot 群内提示语言文件，默认 `zh_CN`，对应 `i18n/zh_CN.json` |
+| `BOT_I18N_DIR` | 自定义语言文件目录，留空使用项目内 `i18n/` |
 | `BOT_DISPLAY_NAME` | 群内介绍页显示的机器人名称 |
 | `BOT_MANAGER_NAME` | 群内介绍页显示的机器人管理者名称 |
 | `BOT_MANAGER_QQ` | 群内介绍页显示的管理者 QQ；留空时会使用 `BOT_MANAGER_QQ_IDS` 的第一个 QQ |
 | `BOT_MANAGER_QQ_IDS` | 机器人管理者 QQ 号，多个用英文逗号分隔；管理者可执行清理缓存等维护命令 |
+| `ALLOWED_GROUP_IDS` | 群白名单，多个群号用英文逗号分隔；留空表示不限制群 |
+| `HEALTH_CHECK_INTERVAL_SECONDS` | Bot 检查后端 `/health` 的间隔，默认 `60` 秒；设为 `0` 可关闭 |
+| `HEALTH_NOTIFY_GROUP_IDS` | 后端异常或恢复时通知的群号，多个用英文逗号分隔；留空时使用白名单群 |
 | `BACKEND_URL` | 后端 FastAPI 地址 |
 | `BACKEND_API_TOKEN` | 后端 API token，没有则留空 |
 | `ENABLE_SEARCH` | 是否启用关键词搜索，默认 `true`；如需关闭可设为 `false` |
@@ -181,7 +194,7 @@ DATA_DIR=./data
 | `JAVLIBRARY_TIMEOUT_SECONDS` | 番号数据源单次请求超时时间，默认 `8` 秒 |
 | `JAVLIBRARY_TOTAL_TIMEOUT_SECONDS` | 单次番号查询总超时时间，默认 `15` 秒；超过后会停止继续尝试后续数据源 |
 | `JAVLIBRARY_CACHE_TTL_SECONDS` | 番号信息成功查询缓存时间，默认 `604800` 秒，即 7 天 |
-| `JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS` | 普通抓取失败缓存时间，默认 `600` 秒，防止重复打源站 |
+| `JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS` | 普通抓取失败缓存时间，默认 `60` 秒；临时失败不会长时间卡住重试 |
 | `JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS` | 未找到番号时的失败缓存时间，默认 `86400` 秒 |
 | `JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS` | 数据源阻断请求时的失败缓存时间，默认 `120` 秒 |
 | `JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS` | 数据源超时时的失败缓存时间，默认 `60` 秒 |
@@ -217,6 +230,7 @@ DATA_DIR=./data
 | `JOB_CACHE_TTL_SECONDS` | 已完成/已失败任务目录保留时间，默认 `259200` 秒，即 3 天 |
 | `BOT_DOWNLOAD_CACHE_TTL_SECONDS` | Bot 下载到本地准备上传的 PDF 缓存保留时间，默认 3 天 |
 | `PREVIEW_CACHE_TTL_SECONDS` | 漫画预览临时文件保留时间，默认 `86400` 秒，即 1 天 |
+| `AUDIT_RETENTION_DAYS` | 命令审计日志保留天数，默认 `30` 天；设为 `0` 不自动清理 |
 | `JM_DOWNLOAD_IMAGE_THREADS` | JMComic 图片下载线程数，默认建议 `8` |
 | `JM_DOWNLOAD_PHOTO_THREADS` | JMComic 章节下载线程数，默认建议 `2` |
 | `JM_DOWNLOAD_MAX_IMAGE_THREADS` | 图片下载线程硬上限，默认 `8`，防止小服务器被过高并发拖死 |
@@ -389,19 +403,21 @@ browser:
 @机器人 帮助
 @机器人 功能
 @机器人 JM123456
-@机器人 今日排行榜
-@机器人 周榜
-@机器人 月榜
+@机器人 JM日榜
+@机器人 JM周榜
+@机器人 JM月榜
 @机器人 JAV SSIS-123
+@机器人 AV搜索 三上悠亚
+@机器人 DB日榜
 @机器人 我的任务
 ```
 
 单独 `@机器人` 会显示机器人介绍、项目地址和基础入口。`@机器人 帮助` 会显示指令说明，`@机器人 功能` 会显示当前支持的功能模块。
 
-默认已开启关键词搜索，也可以搜索关键词：
+默认已开启 JM 关键词搜索，也可以搜索关键词：
 
 ```text
-@机器人 搜索 戦乙女
+@机器人 JM搜索 戦乙女
 ```
 
 机器人会返回最多 `SEARCH_RESULT_LIMIT` 条结果。用户回复序号后，机器人会继续发送封面、标题、页数和预计时间，并询问是否下载；不会直接加入下载队列。
@@ -409,10 +425,9 @@ browser:
 排行榜查询不会加入下载队列，只返回文字列表：
 
 ```text
-@机器人 今日排行榜
-@机器人 日榜
-@机器人 周榜
-@机器人 月榜
+@机器人 JM日榜
+@机器人 JM周榜
+@机器人 JM月榜
 ```
 
 番号信息查询只返回公开元数据，不下载视频：
@@ -423,6 +438,17 @@ browser:
 ```
 
 结果会包含标题、发行日期、时长、制作商、演员、类别、评分、链接和封面。查询结果会缓存到 SQLite，源站阻断、超时或未找到时会返回错误码。
+
+JavDB 搜索和排行榜只返回公开元数据列表，不下载视频：
+
+```text
+@机器人 AV搜索 中文标题或演员名
+@机器人 DB日榜
+@机器人 DB周榜
+@机器人 DB月榜
+```
+
+演员搜索可以直接输入中文名，例如 `@机器人 AV搜索 三上悠亚`。搜索结果里的番号可以继续用 `@机器人 JAV SSIS-123` 查看详情。
 
 输入了无法识别的内容时，机器人会回复：
 
@@ -458,13 +484,14 @@ browser:
 ```text
 @机器人 状态
 @机器人 队列
+@机器人 审计
 @机器人 最近任务
 @机器人 取消 JM123456
 @机器人 取消 任务编号前几位
 @机器人 清理缓存
 ```
 
-`状态`、`队列`、`最近任务`、`取消` 允许 QQ 群主、QQ群管理员、机器人管理者执行。`清理缓存` 只允许机器人管理者执行。机器人管理者由部署者在 `.env` 的 `BOT_MANAGER_QQ_IDS` 中配置，不等同于 QQ 群管理员。
+`状态`、`队列`、`审计`、`最近任务`、`取消` 允许 QQ 群主、QQ群管理员、机器人管理者执行。`审计` 默认查询当前群最近 10 条命令记录。`清理缓存` 只允许机器人管理者执行。机器人管理者由部署者在 `.env` 的 `BOT_MANAGER_QQ_IDS` 中配置，不等同于 QQ 群管理员。
 
 任务完成后，机器人会上传 PDF 并发送完成消息。
 
@@ -609,6 +636,8 @@ Invoke-RestMethod `
 | `POST` | `/api/search` | 关键词搜索漫画；如需关闭可设置 `ENABLE_SEARCH=false` |
 | `GET` | `/api/rankings/{period}` | 查询 JM 排行榜，`period` 支持 `day`、`week`、`month` |
 | `GET` | `/api/jav/videos/{code}` | 查询番号元数据；如需关闭可设置 `ENABLE_JAVLIBRARY=false` |
+| `POST` | `/api/jav/search` | 通过 JavDB 搜索番号标题或演员 |
+| `GET` | `/api/javdb/rankings/{period}` | 查询 JavDB 排行榜，`period` 支持 `day`、`week`、`month` |
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/active?group_id=...&user_id=...` | 查询某个群用户当前活跃任务 |
 | `POST` | `/api/jobs/active/cancel?group_id=...&user_id=...` | 取消某个群用户当前活跃任务 |
@@ -616,9 +645,11 @@ Invoke-RestMethod `
 | `GET` | `/api/jobs/{job_id}` | 查询任务状态，包含 `downloaded_files`、`total_files`、`error_code` |
 | `POST` | `/api/jobs/{job_id}/cancel` | 按任务编号取消排队中或下载中的任务 |
 | `GET` | `/api/jobs/{job_id}/file` | 下载 PDF |
+| `POST` | `/api/audit/events` | 写入一条命令审计记录 |
 | `GET` | `/api/admin/status` | 查询服务器状态、缓存大小和任务统计 |
 | `GET` | `/api/admin/queue` | 查询当前队列和最近错误任务 |
 | `GET` | `/api/admin/history?group_id=...` | 查询某个群的最近任务 |
+| `GET` | `/api/admin/audit?group_id=...` | 查询某个群的最近命令审计 |
 | `POST` | `/api/admin/jobs/{target}/cancel` | 管理员按 JM 编号或任务编号取消任务 |
 | `POST` | `/api/admin/cache/cleanup` | 手动清理缓存；有活跃后端任务时会拒绝 |
 
@@ -662,7 +693,7 @@ project/
 ├─ config/
 │  ├─ jmcomic-option.yml.example
 │  └─ javlibrary-option.yml.example
-├─ lang/
+├─ i18n/
 │  └─ zh_CN.json
 ├─ data/
 ├─ tests/

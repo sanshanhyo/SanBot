@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -121,6 +122,9 @@ class BotSettings:
     ranking_result_limit: int = DEFAULT_RANKING_RESULT_LIMIT
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
     manager_qq_ids: set[str] = field(default_factory=set)
+    allowed_group_ids: set[str] = field(default_factory=set)
+    health_check_interval_seconds: int = 60
+    health_notify_group_ids: set[str] = field(default_factory=set)
     bot_display_name: str = "SanBot"
     manager_name: str = "管理者"
     manager_qq: str = "未配置"
@@ -165,6 +169,9 @@ class BotSettings:
                 _env_int("USER_COMMAND_COOLDOWN_SECONDS", DEFAULT_USER_COMMAND_COOLDOWN_SECONDS),
             ),
             manager_qq_ids=manager_qq_ids,
+            allowed_group_ids=_env_id_set("ALLOWED_GROUP_IDS") or _env_id_set("BOT_ALLOWED_GROUP_IDS"),
+            health_check_interval_seconds=max(0, _env_int("HEALTH_CHECK_INTERVAL_SECONDS", 60)),
+            health_notify_group_ids=_env_id_set("HEALTH_NOTIFY_GROUP_IDS"),
             bot_display_name=os.getenv("BOT_DISPLAY_NAME") or "SanBot",
             manager_name=os.getenv("BOT_MANAGER_NAME") or "管理者",
             manager_qq=manager_qq,
@@ -260,6 +267,8 @@ def _parse_admin_command(event: dict[str, Any], bot_qq_id: str) -> AdminCommand 
         return AdminCommand("status")
     if normalized in {"队列", "queue"}:
         return AdminCommand("queue")
+    if normalized in {"审计", "审计日志", "操作日志", "audit"}:
+        return AdminCommand("audit")
     if normalized in {"清理缓存", "清除缓存", "cleanup"}:
         return AdminCommand("cleanup")
 
@@ -300,6 +309,10 @@ def _can_run_admin_command(event: dict[str, Any], user_id: str, settings: BotSet
     return _is_manager(user_id, settings) or _is_group_admin(event)
 
 
+def _is_group_allowed(group_id: str, settings: BotSettings) -> bool:
+    return not settings.allowed_group_ids or str(group_id) in settings.allowed_group_ids
+
+
 async def handle_group_message(
     event: dict[str, Any],
     settings: BotSettings,
@@ -337,15 +350,106 @@ async def handle_group_message(
         message_text,
     )
 
+    if not _is_group_allowed(group_id, settings):
+        if str(settings.bot_qq_id) in at_targets:
+            logger.warning("Blocked command from non-whitelisted group_id=%s user_id=%s.", group_id, user_id)
+            await _record_command_audit(
+                backend,
+                group_id,
+                user_id,
+                "blocked_group",
+                None,
+                "blocked",
+                "GROUP_NOT_ALLOWED",
+                0,
+            )
+        return
+
     now = asyncio.get_running_loop().time()
     state.cleanup(now)
-    if await _handle_admin_command(event, group_id, user_id, settings, state, napcat, backend):
-        return
+
+    admin_command = _parse_admin_command(event, settings.bot_qq_id)
+    if admin_command is not None:
+        started = time.monotonic()
+        try:
+            handled = await _handle_admin_command(
+                event,
+                group_id,
+                user_id,
+                settings,
+                state,
+                napcat,
+                backend,
+                admin_command,
+            )
+        except Exception as exc:
+            await _record_command_audit(
+                backend,
+                group_id,
+                user_id,
+                f"admin:{admin_command.name}",
+                admin_command.target,
+                "failed",
+                type(exc).__name__,
+                _duration_ms(started),
+            )
+            raise
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            f"admin:{admin_command.name}",
+            admin_command.target,
+            "handled",
+            None,
+            _duration_ms(started),
+        )
+        if handled:
+            return
+
+    pending_download = state.pending_downloads.get((group_id, user_id))
+    pending_download_target = f"JM{pending_download.album_id}" if pending_download is not None else None
+    started = time.monotonic()
     if await _handle_pending_confirmation(event, group_id, user_id, settings, state, napcat, backend, spawn_task):
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            "confirm_download",
+            pending_download_target,
+            "handled",
+            None,
+            _duration_ms(started),
+        )
         return
+
+    pending_search = state.pending_searches.get((group_id, user_id))
+    started = time.monotonic()
     if await _handle_pending_search_selection(event, group_id, user_id, settings, state, napcat, backend):
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            "search_select",
+            pending_search.query if pending_search is not None else None,
+            "handled",
+            None,
+            _duration_ms(started),
+        )
         return
+
+    started = time.monotonic()
     if await _handle_active_cancel(event, group_id, user_id, napcat, backend):
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            "active_cancel",
+            "active",
+            "handled",
+            None,
+            _duration_ms(started),
+        )
         return
 
     parse_result = parse_group_message(event, settings.bot_qq_id)
@@ -360,14 +464,25 @@ async def handle_group_message(
         return
 
     logger.info(
-        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s jav_code=%s group_id=%s user_id=%s",
+        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s db_ranking_period=%s jav_code=%s group_id=%s user_id=%s",
         parse_result.action,
         parse_result.album_id,
         parse_result.search_query,
         parse_result.ranking_period,
+        parse_result.db_ranking_period,
         parse_result.jav_code,
         group_id,
         user_id,
+    )
+    await _record_command_audit(
+        backend,
+        group_id,
+        user_id,
+        parse_result.action.value,
+        _audit_target(parse_result),
+        "received",
+        None,
+        0,
     )
 
     if parse_result.action == ParseAction.USAGE:
@@ -401,7 +516,14 @@ async def handle_group_message(
         await _send_group_history(group_id, napcat, backend)
         return
 
-    if parse_result.action in {ParseAction.OK, ParseAction.SEARCH, ParseAction.RANKING, ParseAction.JAV}:
+    if parse_result.action in {
+        ParseAction.OK,
+        ParseAction.SEARCH,
+        ParseAction.RANKING,
+        ParseAction.AV_SEARCH,
+        ParseAction.DB_RANKING,
+        ParseAction.JAV,
+    }:
         remaining = _command_cooldown_remaining(group_id, user_id, settings, state, now)
         if remaining > 0:
             await _safe_send(napcat, group_id, lang_text("command_cooldown", seconds=math.ceil(remaining)))
@@ -420,9 +542,29 @@ async def handle_group_message(
         )
         return
 
+    if parse_result.action == ParseAction.AV_SEARCH:
+        await _handle_av_search_command(
+            parse_result.search_query or "",
+            group_id,
+            settings,
+            napcat,
+            backend,
+        )
+        return
+
     if parse_result.action == ParseAction.RANKING:
         await _handle_ranking_command(
             parse_result.ranking_period or "day",
+            group_id,
+            settings,
+            napcat,
+            backend,
+        )
+        return
+
+    if parse_result.action == ParseAction.DB_RANKING:
+        await _handle_javdb_ranking_command(
+            parse_result.db_ranking_period or "day",
             group_id,
             settings,
             napcat,
@@ -474,8 +616,9 @@ async def _handle_admin_command(
     state: BotState,
     napcat: NapCatClient,
     backend: BackendClient,
+    command: AdminCommand | None = None,
 ) -> bool:
-    command = _parse_admin_command(event, settings.bot_qq_id)
+    command = command or _parse_admin_command(event, settings.bot_qq_id)
     if command is None:
         return False
 
@@ -491,6 +634,8 @@ async def _handle_admin_command(
         await _send_admin_status(group_id, state, napcat, backend)
     elif command.name == "queue":
         await _send_admin_queue(group_id, state, napcat, backend)
+    elif command.name == "audit":
+        await _send_admin_audit(group_id, napcat, backend)
     elif command.name == "cleanup":
         await _run_admin_cleanup(group_id, state, napcat, backend)
     elif command.name == "cancel":
@@ -530,6 +675,23 @@ async def _send_admin_queue(
     jobs = payload.get("jobs")
     safe_jobs = [job for job in jobs if isinstance(job, dict)] if isinstance(jobs, list) else []
     await _safe_send(napcat, group_id, _format_admin_queue(_merge_uploading_jobs(safe_jobs, state)))
+
+
+async def _send_admin_audit(
+    group_id: str,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        payload = await backend.get_admin_audit(group_id=group_id, limit=10)
+    except BackendError as exc:
+        logger.exception("Could not fetch admin audit log.")
+        await _safe_send(napcat, group_id, lang_text("admin_audit_failed", error_code=exc.error_code))
+        return
+
+    events = payload.get("events")
+    safe_events = [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+    await _safe_send(napcat, group_id, _format_admin_audit(safe_events))
 
 
 def _format_home_message(settings: BotSettings) -> str:
@@ -639,7 +801,16 @@ async def _run_admin_cancel(
 
     job = payload.get("job") if isinstance(payload, dict) else None
     if not isinstance(job, dict):
-        await _safe_send(napcat, group_id, lang_text("admin_cancel_failed", target=target, error="返回结果无效", error_code="BAD_RESPONSE"))
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text(
+                "admin_cancel_failed",
+                target=target,
+                error=lang_text("bad_backend_response"),
+                error_code="BAD_RESPONSE",
+            ),
+        )
         return
 
     await _safe_send(
@@ -775,7 +946,11 @@ async def _handle_pending_search_selection(
     album_id = str(selected.get("album_id") or "")
     if not album_id.isdigit():
         state.pending_searches.pop(key, None)
-        await _safe_send(napcat, group_id, lang_text("search_failed", error="搜索结果无效", error_code="SEARCH_BAD_RESULT"))
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text("search_failed", error=lang_text("bad_search_result"), error_code="SEARCH_BAD_RESULT"),
+        )
         return True
 
     try:
@@ -881,6 +1056,65 @@ async def _handle_ranking_command(
         return
 
     await _safe_send(napcat, group_id, _format_ranking_results(payload, safe_results))
+
+
+async def _handle_av_search_command(
+    query: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    if not settings.enable_javlibrary:
+        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        return
+
+    query = re.sub(r"\s+", " ", query).strip()
+    if not query:
+        await _safe_send(napcat, group_id, lang_text("av_search_usage"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("av_searching", query=query))
+    try:
+        payload = await backend.search_jav_videos(query, page=1, limit=settings.search_result_limit)
+    except BackendError as exc:
+        logger.exception("Could not search JAV metadata for group=%s.", group_id)
+        await _safe_send(napcat, group_id, lang_text("av_search_failed", error=exc, error_code=exc.error_code))
+        return
+
+    results = payload.get("results")
+    safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
+    if not safe_results:
+        await _safe_send(napcat, group_id, lang_text("av_search_empty", query=query))
+        return
+    await _safe_send(napcat, group_id, _format_jav_search_results(query, safe_results))
+
+
+async def _handle_javdb_ranking_command(
+    period: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    if not settings.enable_javlibrary:
+        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("db_ranking_fetching", period=_ranking_period_label(period)))
+    try:
+        payload = await backend.get_javdb_ranking(period, page=1, limit=settings.ranking_result_limit)
+    except BackendError as exc:
+        logger.exception("Could not fetch JavDB %s ranking for group=%s.", period, group_id)
+        await _safe_send(napcat, group_id, lang_text("db_ranking_failed", error=exc, error_code=exc.error_code))
+        return
+
+    results = payload.get("results")
+    safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
+    if not safe_results:
+        await _safe_send(napcat, group_id, lang_text("db_ranking_empty", period=_ranking_period_label(period)))
+        return
+    await _safe_send(napcat, group_id, _format_javdb_ranking_results(payload, safe_results))
 
 
 async def _handle_jav_command(
@@ -1039,10 +1273,10 @@ def _format_search_results(query: str, results: list[dict[str, Any]]) -> str:
 
 def _ranking_period_label(period: str) -> str:
     return {
-        "day": "日榜",
-        "week": "周榜",
-        "month": "月榜",
-    }.get(period, "排行榜")
+        "day": lang_text("period_day"),
+        "week": lang_text("period_week"),
+        "month": lang_text("period_month"),
+    }.get(period, lang_text("period_unknown"))
 
 
 def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any]]) -> str:
@@ -1059,6 +1293,49 @@ def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any
         lines.append(lang_text("ranking_result_line", rank=rank, album_id=album_id, title=title))
     lines.append(lang_text("ranking_results_footer"))
     return "\n".join(lines)
+
+
+def _format_jav_search_results(query: str, results: list[dict[str, Any]]) -> str:
+    lines = [lang_text("av_search_results_header", query=query)]
+    for index, result in enumerate(results[:10], start=1):
+        lines.append(_format_jav_list_line(index, result, rank=index))
+    lines.append(lang_text("av_search_results_footer"))
+    return "\n".join(lines)
+
+
+def _format_javdb_ranking_results(payload: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    period = str(payload.get("period") or "")
+    label = str(payload.get("period_label") or _ranking_period_label(period))
+    lines = [lang_text("db_ranking_results_header", period=label)]
+    for index, result in enumerate(results[:20], start=1):
+        rank = _int_or_default(result.get("rank"), index)
+        lines.append(_format_jav_list_line(index, result, rank=rank))
+    lines.append(lang_text("db_ranking_results_footer"))
+    return "\n".join(lines)
+
+
+def _format_jav_list_line(index: int, result: dict[str, Any], *, rank: int) -> str:
+    code = str(result.get("code") or "?")
+    title = _truncate_display_text(str(result.get("title") or code), 42)
+    source = str(result.get("source") or "javdb")
+    actors = _format_name_list(result.get("actors"), limit=3)
+    actors_suffix = lang_text("av_list_actors_suffix", actors=actors) if actors else ""
+    return lang_text(
+        "av_list_line",
+        index=index,
+        rank=rank,
+        code=code,
+        title=title,
+        source=source,
+        actors=actors_suffix,
+    )
+
+
+def _int_or_default(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _format_jav_video(payload: dict[str, Any]) -> str:
@@ -1122,19 +1399,39 @@ def _format_admin_status(payload: dict[str, Any], uploading_count: int) -> str:
     if memory:
         memory_text = f"{_format_bytes(int(memory.get('used') or 0))} / {_format_bytes(int(memory.get('total') or 0))}"
     else:
-        memory_text = "未知"
+        memory_text = lang_text("unknown")
 
     cpu = payload.get("cpu_percent")
-    cpu_text = f"{float(cpu):.1f}%" if isinstance(cpu, (int, float)) else "未知"
+    cpu_text = f"{float(cpu):.1f}%" if isinstance(cpu, (int, float)) else lang_text("unknown")
 
     lines = [
-        "服务器状态",
-        f"CPU：{cpu_text}",
-        f"内存：{memory_text}",
-        f"磁盘：{_format_bytes(int(disk.get('used') or 0))} / {_format_bytes(int(disk.get('total') or 0))}，剩余 {_format_bytes(int(disk.get('free') or 0))}",
-        f"缓存：data {_format_bytes(int(cache.get('data') or 0))}，jobs {_format_bytes(int(cache.get('jobs') or 0))}，bot {_format_bytes(int(cache.get('bot_downloads') or 0))}",
-        f"网络：上行 {_format_rate(network.get('tx_bytes_per_second'))}，下行 {_format_rate(network.get('rx_bytes_per_second'))}",
-        f"队列：下载中 {int(jobs.get('downloading') or 0)}，排队 {int(jobs.get('queued') or 0)}，转换中 {int(jobs.get('converting') or 0)}，上传中 {uploading_count}",
+        lang_text("admin_status_header"),
+        lang_text("admin_status_cpu", cpu=cpu_text),
+        lang_text("admin_status_memory", memory=memory_text),
+        lang_text(
+            "admin_status_disk",
+            used=_format_bytes(int(disk.get("used") or 0)),
+            total=_format_bytes(int(disk.get("total") or 0)),
+            free=_format_bytes(int(disk.get("free") or 0)),
+        ),
+        lang_text(
+            "admin_status_cache",
+            data=_format_bytes(int(cache.get("data") or 0)),
+            jobs=_format_bytes(int(cache.get("jobs") or 0)),
+            bot=_format_bytes(int(cache.get("bot_downloads") or 0)),
+        ),
+        lang_text(
+            "admin_status_network",
+            tx=_format_rate(network.get("tx_bytes_per_second")),
+            rx=_format_rate(network.get("rx_bytes_per_second")),
+        ),
+        lang_text(
+            "admin_status_queue",
+            downloading=int(jobs.get("downloading") or 0),
+            queued=int(jobs.get("queued") or 0),
+            converting=int(jobs.get("converting") or 0),
+            uploading=uploading_count,
+        ),
     ]
     return "\n".join(lines)
 
@@ -1143,7 +1440,7 @@ def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
         return lang_text("admin_queue_empty")
 
-    lines = ["当前队列"]
+    lines = [lang_text("admin_queue_header")]
     for index, job in enumerate(jobs[:20], start=1):
         job_id = _short_job_id(str(job.get("job_id") or ""))
         album_id = str(job.get("album_id") or "?")
@@ -1158,6 +1455,29 @@ def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
                 album_id=album_id,
                 status=progress or _status_label(status_value),
                 group_id=group_id,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _format_admin_audit(events: list[dict[str, Any]]) -> str:
+    if not events:
+        return lang_text("admin_audit_empty")
+
+    lines = [lang_text("admin_audit_header")]
+    for index, event in enumerate(events[:10], start=1):
+        target = str(event.get("target") or "")
+        error_code = str(event.get("error_code") or "")
+        lines.append(
+            lang_text(
+                "admin_audit_line",
+                index=index,
+                time=_format_history_time(str(event.get("created_at") or "")),
+                command=_audit_command_label(str(event.get("command") or "")),
+                status=_audit_status_label(str(event.get("status") or "")),
+                user_id=str(event.get("user_id") or "?"),
+                target=lang_text("admin_audit_target_suffix", target=target) if target else "",
+                error=lang_text("admin_audit_error_suffix", error_code=error_code) if error_code else "",
             )
         )
     return "\n".join(lines)
@@ -1190,8 +1510,99 @@ def _format_history_jobs(jobs: list[dict[str, Any]], group_scope: bool) -> str:
 
 def _format_history_time(value: str) -> str:
     if not value:
-        return "时间未知"
+        return lang_text("time_unknown")
     return value.replace("T", " ")[:16]
+
+
+def _audit_command_label(command: str) -> str:
+    key_by_command = {
+        "admin:status": "audit_command_admin_status",
+        "admin:queue": "audit_command_admin_queue",
+        "admin:audit": "audit_command_admin_audit",
+        "admin:cleanup": "audit_command_admin_cleanup",
+        "admin:cancel": "audit_command_admin_cancel",
+        "confirm_download": "audit_command_confirm_download",
+        "search_select": "audit_command_search_select",
+        "active_cancel": "audit_command_active_cancel",
+        "blocked_group": "audit_command_blocked_group",
+        "home": "audit_command_home",
+        "help": "audit_command_help",
+        "features": "audit_command_features",
+        "history": "audit_command_history",
+        "group_history": "audit_command_group_history",
+        "usage": "audit_command_usage",
+        "ok": "audit_command_ok",
+        "search": "audit_command_search",
+        "ranking": "audit_command_ranking",
+        "av_search": "audit_command_av_search",
+        "db_ranking": "audit_command_db_ranking",
+        "jav": "audit_command_jav",
+        "error": "audit_command_error",
+    }
+    key = key_by_command.get(command)
+    return lang_text(key) if key else (command or lang_text("unknown"))
+
+
+def _audit_status_label(status_value: str) -> str:
+    key_by_status = {
+        "received": "audit_status_received",
+        "handled": "audit_status_handled",
+        "failed": "audit_status_failed",
+        "blocked": "audit_status_blocked",
+    }
+    key = key_by_status.get(status_value)
+    return lang_text(key) if key else (status_value or lang_text("unknown"))
+
+
+def _audit_target(parse_result: object) -> str | None:
+    if not hasattr(parse_result, "action"):
+        return None
+    action = parse_result.action
+    if action == ParseAction.OK:
+        return f"JM{parse_result.album_id}" if parse_result.album_id else None
+    if action == ParseAction.SEARCH:
+        return parse_result.search_query
+    if action == ParseAction.RANKING:
+        return parse_result.ranking_period
+    if action == ParseAction.AV_SEARCH:
+        return parse_result.search_query
+    if action == ParseAction.DB_RANKING:
+        return parse_result.db_ranking_period
+    if action == ParseAction.JAV:
+        return parse_result.jav_code
+    if action == ParseAction.ERROR:
+        return parse_result.error_key
+    return None
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
+
+
+async def _record_command_audit(
+    backend: BackendClient,
+    group_id: str,
+    user_id: str,
+    command: str,
+    target: str | None,
+    status_value: str,
+    error_code: str | None,
+    duration_ms: int,
+) -> None:
+    try:
+        await backend.create_audit_event(
+            {
+                "group_id": group_id,
+                "user_id": user_id,
+                "command": command,
+                "target": target,
+                "status": status_value,
+                "error_code": error_code,
+                "duration_ms": duration_ms,
+            }
+        )
+    except Exception:
+        logger.debug("Could not record command audit event.", exc_info=True)
 
 
 def _merge_uploading_jobs(jobs: list[dict[str, Any]], state: BotState) -> list[dict[str, Any]]:
@@ -1205,7 +1616,7 @@ def _merge_uploading_jobs(jobs: list[dict[str, Any]], state: BotState) -> list[d
             "status": "uploading",
             "downloaded_files": 0,
             "total_files": 0,
-            "progress_message": "上传中",
+            "progress_message": lang_text("status_uploading"),
         }
     return list(merged.values())
 
@@ -1214,9 +1625,9 @@ def _job_progress_text(job: dict[str, Any]) -> str:
     status_value = str(job.get("status") or "")
     if status_value == "failed":
         error_code = job.get("error_code")
-        return f"错误：{error_code or 'UNKNOWN'}"
+        return lang_text("status_error_with_code", error_code=error_code or "UNKNOWN")
     if status_value == "uploading":
-        return "上传中"
+        return lang_text("status_uploading")
 
     total_files = int(job.get("total_files") or 0)
     downloaded_files = int(job.get("downloaded_files") or 0)
@@ -1230,14 +1641,16 @@ def _job_progress_text(job: dict[str, Any]) -> str:
 
 
 def _status_label(status_value: str) -> str:
-    return {
-        "queued": "排队中",
-        "downloading": "下载中",
-        "converting": "转换中",
-        "completed": "已完成",
-        "failed": "错误",
-        "uploading": "上传中",
-    }.get(status_value, status_value or "未知")
+    key_by_status = {
+        "queued": "status_queued",
+        "downloading": "status_downloading",
+        "converting": "status_converting",
+        "completed": "status_completed",
+        "failed": "status_failed",
+        "uploading": "status_uploading",
+    }
+    key = key_by_status.get(status_value)
+    return lang_text(key) if key else (status_value or lang_text("unknown"))
 
 
 def _short_job_id(job_id: str) -> str:
@@ -1913,7 +2326,7 @@ def _format_bytes(size: int) -> str:
 
 def _format_rate(value: object) -> str:
     if not isinstance(value, (int, float)):
-        return "未知"
+        return lang_text("unknown")
     return f"{_format_bytes(int(value))}/s"
 
 
@@ -1922,6 +2335,37 @@ async def _safe_send(napcat: NapCatClient, group_id: str, message: str) -> None:
         await napcat.send_group_msg(group_id, message)
     except NapCatAPIError:
         logger.exception("Could not send group message.")
+
+
+async def monitor_health(
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    interval = max(5, settings.health_check_interval_seconds)
+    was_healthy = True
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            payload = await backend.health()
+            if not isinstance(payload, dict) or payload.get("status") != "ok":
+                raise BackendError("后端健康检查返回异常", "BACKEND_HEALTH_BAD_STATUS")
+        except Exception:
+            logger.warning("Backend health check failed.", exc_info=True)
+            if was_healthy:
+                await _notify_health_groups(settings, napcat, lang_text("health_failed"))
+            was_healthy = False
+            continue
+
+        if not was_healthy:
+            await _notify_health_groups(settings, napcat, lang_text("health_recovered"))
+        was_healthy = True
+
+
+async def _notify_health_groups(settings: BotSettings, napcat: NapCatClient, message: str) -> None:
+    notify_groups = settings.health_notify_group_ids or settings.allowed_group_ids
+    for group_id in sorted(notify_groups):
+        await _safe_send(napcat, group_id, message)
 
 
 def _spawn_task(pending_tasks: set[asyncio.Task[None]], awaitable: Awaitable[None]) -> None:
@@ -1961,6 +2405,8 @@ async def run_bot() -> None:
         settings.backend_url,
         settings.backend_api_token,
     ) as backend:
+        if settings.health_check_interval_seconds > 0:
+            _spawn_task(pending_tasks, monitor_health(settings, napcat, backend))
         try:
             async for event in napcat.iter_events():
                 _spawn_task(

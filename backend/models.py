@@ -39,6 +39,16 @@ class JobResponse(BaseModel):
     progress_message: str | None = None
 
 
+class CommandAuditCreate(BaseModel):
+    group_id: str = Field(pattern=r"^\d+$")
+    user_id: str = Field(pattern=r"^\d+$")
+    command: str = Field(min_length=1, max_length=64)
+    target: str | None = Field(default=None, max_length=128)
+    status: str = Field(min_length=1, max_length=32)
+    error_code: str | None = Field(default=None, max_length=64)
+    duration_ms: int = Field(default=0, ge=0)
+
+
 class AlbumPreviewResponse(BaseModel):
     album_id: str
     title: str
@@ -81,6 +91,38 @@ class AlbumRankingResponse(BaseModel):
     page: int
     total: int
     results: list[AlbumRankingItem]
+
+
+class JavSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=60)
+    page: int = Field(default=1, ge=1, le=5)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class JavSearchItem(BaseModel):
+    code: str
+    title: str
+    url: str
+    source: str = "javdb"
+    cover_url: str | None = None
+    rank: int | None = None
+    release_date: str | None = None
+    actors: list[str] = Field(default_factory=list)
+
+
+class JavSearchResponse(BaseModel):
+    query: str
+    page: int
+    total: int
+    results: list[JavSearchItem]
+
+
+class JavRankingResponse(BaseModel):
+    period: str = Field(pattern=r"^(day|week|month)$")
+    period_label: str
+    page: int
+    total: int
+    results: list[JavSearchItem]
 
 
 class JavVideoResponse(BaseModel):

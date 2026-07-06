@@ -10,6 +10,10 @@ class JavLibrarySearchItem:
     title: str
     url: str
     cover_url: str | None = None
+    source: str = "javlibrary"
+    rank: int | None = None
+    release_date: str | None = None
+    actors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

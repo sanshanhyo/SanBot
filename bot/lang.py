@@ -13,7 +13,14 @@ DEFAULT_LOCALE = "zh_CN"
 
 
 def _lang_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "lang"
+    configured = os.getenv("BOT_I18N_DIR")
+    if configured:
+        return Path(configured)
+    project_root = Path(__file__).resolve().parents[1]
+    i18n_dir = project_root / "i18n"
+    if i18n_dir.is_dir():
+        return i18n_dir
+    return project_root / "lang"
 
 
 @lru_cache(maxsize=8)

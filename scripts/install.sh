@@ -287,10 +287,14 @@ write_env_file() {
 
   write_env_line "$env_file" "BOT_QQ_ID" "$bot_qq"
   write_env_line "$env_file" "BOT_LANG" "zh_CN"
+  write_env_line "$env_file" "BOT_I18N_DIR" ""
   write_env_line "$env_file" "BOT_DISPLAY_NAME" "$bot_name"
   write_env_line "$env_file" "BOT_MANAGER_NAME" "$manager_name"
   write_env_line "$env_file" "BOT_MANAGER_QQ" "$manager_qq"
   write_env_line "$env_file" "BOT_MANAGER_QQ_IDS" "$manager_qq"
+  write_env_line "$env_file" "ALLOWED_GROUP_IDS" ""
+  write_env_line "$env_file" "HEALTH_CHECK_INTERVAL_SECONDS" "60"
+  write_env_line "$env_file" "HEALTH_NOTIFY_GROUP_IDS" ""
 
   write_env_line "$env_file" "NAPCAT_WS_URL" "ws://napcat:3001"
   write_env_line "$env_file" "NAPCAT_HTTP_URL" "http://napcat:3000"
@@ -316,7 +320,7 @@ write_env_file() {
   write_env_line "$env_file" "JAVLIBRARY_TIMEOUT_SECONDS" "8"
   write_env_line "$env_file" "JAVLIBRARY_TOTAL_TIMEOUT_SECONDS" "15"
   write_env_line "$env_file" "JAVLIBRARY_CACHE_TTL_SECONDS" "604800"
-  write_env_line "$env_file" "JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS" "600"
+  write_env_line "$env_file" "JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS" "60"
   write_env_line "$env_file" "JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS" "86400"
   write_env_line "$env_file" "JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS" "120"
   write_env_line "$env_file" "JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS" "60"
@@ -353,6 +357,7 @@ write_env_file() {
   write_env_line "$env_file" "JOB_CACHE_TTL_SECONDS" "259200"
   write_env_line "$env_file" "BOT_DOWNLOAD_CACHE_TTL_SECONDS" "259200"
   write_env_line "$env_file" "PREVIEW_CACHE_TTL_SECONDS" "86400"
+  write_env_line "$env_file" "AUDIT_RETENTION_DAYS" "30"
 
   write_env_line "$env_file" "JM_DOWNLOAD_IMAGE_THREADS" "$image_threads"
   write_env_line "$env_file" "JM_DOWNLOAD_PHOTO_THREADS" "$photo_threads"

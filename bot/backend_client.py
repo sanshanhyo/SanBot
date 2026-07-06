@@ -46,6 +46,14 @@ class BackendClient:
             return {}
         return {"Authorization": f"Bearer {self.api_token}"}
 
+    async def health(self) -> dict[str, Any]:
+        try:
+            response = await self._client.get("/health", timeout=5.0)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端健康检查失败", "BACKEND_HEALTH_FAILED") from exc
+        return response.json()
+
     async def create_job(
         self,
         album_id: str,
@@ -100,6 +108,34 @@ class BackendClient:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise BackendError("后端队列查询失败", "BACKEND_ADMIN_QUEUE_FAILED") from exc
+        return response.json()
+
+    async def get_admin_audit(self, group_id: str | None = None, limit: int = 20) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if group_id:
+            params["group_id"] = group_id
+        try:
+            response = await self._client.get(
+                "/api/admin/audit",
+                params=params,
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端审计日志查询失败", "BACKEND_ADMIN_AUDIT_FAILED") from exc
+        return response.json()
+
+    async def create_audit_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/audit/events",
+                json=payload,
+                headers=self._headers(),
+                timeout=5.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise BackendError("后端审计日志写入失败", "BACKEND_AUDIT_WRITE_FAILED") from exc
         return response.json()
 
     async def get_group_history(self, group_id: str, limit: int = 10) -> dict[str, Any]:
@@ -230,6 +266,44 @@ class BackendClient:
         except httpx.HTTPStatusError as exc:
             message = self._error_detail_message(exc.response) or "排行榜获取失败，请稍后再试"
             raise BackendError(message, "BACKEND_RANKING_FAILED") from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
+    async def search_jav_videos(self, query: str, page: int = 1, limit: int = 5) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/jav/search",
+                json={"query": query, "page": page, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "AV 搜索失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "BACKEND_AV_SEARCH_FAILED")
+            if exc.response.status_code == 403:
+                error_code = "JAVLIBRARY_DISABLED"
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
+    async def get_javdb_ranking(self, period: str, page: int = 1, limit: int = 10) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                f"/api/javdb/rankings/{period}",
+                params={"page": page, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "JavDB 排行榜获取失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "BACKEND_JAVDB_RANKING_FAILED")
+            if exc.response.status_code == 403:
+                error_code = "JAVLIBRARY_DISABLED"
+            raise BackendError(message, error_code) from exc
         except httpx.HTTPError as exc:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()

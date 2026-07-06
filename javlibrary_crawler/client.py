@@ -12,7 +12,7 @@ from .errors import (
     JavLibraryTimeoutError,
 )
 from .fetcher import CurlCffiFetcher, HttpFetcher
-from .models import JavLibraryVideo
+from .models import JavLibrarySearchItem, JavLibraryVideo
 from .normalizer import normalize_code
 from .providers import ProviderConfig, create_provider
 
@@ -79,6 +79,27 @@ class JavLibraryCrawler:
                 errors.append((provider.source, exc))
 
         raise _aggregate_lookup_error(code, errors)
+
+    def search_javdb(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        provider = self._javdb_provider()
+        return provider.search(query.strip(), page=page, limit=limit)
+
+    def javdb_ranking(self, period: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        provider = self._javdb_provider()
+        return provider.ranking(period, page=page, limit=limit)
+
+    def _javdb_provider(self):
+        provider_config = ProviderConfig(
+            javlibrary_base_url=self.config.base_url,
+            javlibrary_language=self.config.language,
+            javdb_base_url=self.config.javdb_base_url,
+            javbus_base_url=self.config.javbus_base_url,
+            jav321_base_url=self.config.jav321_base_url,
+        )
+        provider = create_provider("javdb", self.fetcher, provider_config)
+        if provider is None:
+            raise JavLibraryFetchError("JavDB 数据源不可用")
+        return provider
 
     def _create_fetcher(self) -> object:
         if self.config.fetcher.lower() == "browser":

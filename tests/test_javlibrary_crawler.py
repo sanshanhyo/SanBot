@@ -101,6 +101,22 @@ JAVDB_SEARCH_HTML = """
 """
 
 
+JAVDB_LIST_HTML = """
+<html>
+  <body>
+    <a class="box" href="/v/db123">
+      <img src="/coverdb.jpg">
+      <div class="video-title">SSIS-123 JavDB Fixture Title</div>
+      <div class="meta">2026-04-05 三上悠亚</div>
+    </a>
+    <a class="box" href="/v/db456">
+      <div class="video-title">ABP-456 Another Fixture Title</div>
+    </a>
+  </body>
+</html>
+"""
+
+
 JAVDB_DETAIL_HTML = """
 <html>
   <body>
@@ -292,6 +308,51 @@ def test_crawler_parses_javdb_fixture() -> None:
     assert fetcher.urls == ["https://javdb.com/search?q=SSIS-123&locale=zh", "https://javdb.com/v/db123"]
 
 
+def test_crawler_searches_javdb_by_chinese_query() -> None:
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.urls.append(url)
+            return FetchResponse(url, 200, JAVDB_LIST_HTML)
+
+        def close(self) -> None:
+            pass
+
+    fetcher = FakeFetcher()
+    crawler = JavLibraryCrawler(JavLibraryCrawlerConfig(), fetcher=fetcher)  # type: ignore[arg-type]
+
+    results = crawler.search_javdb("三上悠亚", limit=2)
+
+    assert fetcher.urls == ["https://javdb.com/search?q=%E4%B8%89%E4%B8%8A%E6%82%A0%E4%BA%9A&f=all&locale=zh&page=1"]
+    assert [item.code for item in results] == ["SSIS-123", "ABP-456"]
+    assert results[0].title == "JavDB Fixture Title"
+    assert results[0].cover_url == "https://javdb.com/coverdb.jpg"
+    assert "三上悠亚" in results[0].actors
+
+
+def test_crawler_fetches_javdb_ranking() -> None:
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.urls.append(url)
+            return FetchResponse(url, 200, JAVDB_LIST_HTML)
+
+        def close(self) -> None:
+            pass
+
+    fetcher = FakeFetcher()
+    crawler = JavLibraryCrawler(JavLibraryCrawlerConfig(), fetcher=fetcher)  # type: ignore[arg-type]
+
+    results = crawler.javdb_ranking("week", limit=2)
+
+    assert fetcher.urls == ["https://javdb.com/rankings/movies?period=weekly&locale=zh&page=1"]
+    assert [(item.rank, item.code) for item in results] == [(1, "SSIS-123"), (2, "ABP-456")]
+
+
 def test_crawler_total_timeout_stops_between_requests() -> None:
     class FakeFetcher:
         def __init__(self) -> None:
@@ -380,7 +441,8 @@ def test_javlibrary_service_uses_error_specific_cache_ttl(tmp_path: Path) -> Non
     assert service._error_cache_ttl("JAV_NOT_FOUND") == 86400
     assert service._error_cache_ttl("JAV_SOURCE_BLOCKED") == 120
     assert service._error_cache_ttl("JAV_FETCH_TIMEOUT") == 60
-    assert service._error_cache_ttl("JAV_FETCH_FAILED") == 600
+    assert service._error_cache_ttl("JAV_FETCH_FAILED") == 60
+    assert service._error_cache_ttl("JAVLIBRARY_ERROR") == 60
 
 
 def test_option_file_loads_yaml(tmp_path: Path) -> None:

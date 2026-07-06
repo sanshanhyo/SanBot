@@ -153,7 +153,7 @@ def test_parse_search_command_with_at() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 搜索 戦乙女"}},
+                {"type": "text", "data": {"text": " JM搜索 戦乙女"}},
             ]
         ),
         bot_qq_id="12345",
@@ -168,7 +168,7 @@ def test_search_command_does_not_become_jm_download() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 搜索 JM123456"}},
+                {"type": "text", "data": {"text": " JM搜索 JM123456"}},
             ]
         ),
         bot_qq_id="12345",
@@ -183,14 +183,14 @@ def test_search_without_query_returns_usage_error() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 搜索 "}},
+                {"type": "text", "data": {"text": " JM搜索 "}},
             ]
         ),
         bot_qq_id="12345",
     )
 
     assert result.action == ParseAction.ERROR
-    assert result.error_key == "search_usage"
+    assert result.error_key == "jm_search_usage"
 
 
 def test_parse_day_ranking_command_with_at() -> None:
@@ -198,7 +198,7 @@ def test_parse_day_ranking_command_with_at() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 今日排行榜"}},
+                {"type": "text", "data": {"text": " JM日榜"}},
             ]
         ),
         bot_qq_id="12345",
@@ -213,7 +213,7 @@ def test_parse_week_ranking_command_with_at() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " 周榜"}},
+                {"type": "text", "data": {"text": " JM周榜"}},
             ]
         ),
         bot_qq_id="12345",
@@ -225,12 +225,46 @@ def test_parse_week_ranking_command_with_at() -> None:
 
 def test_parse_month_ranking_command_with_at() -> None:
     result = parse_group_message(
-        _event("[CQ:at,qq=12345] 月榜"),
+        _event("[CQ:at,qq=12345] JM月榜"),
         bot_qq_id="12345",
     )
 
     assert result.action == ParseAction.RANKING
     assert result.ranking_period == "month"
+
+
+def test_plain_ranking_command_is_no_longer_jm_ranking() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] 月榜"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.USAGE
+
+
+def test_parse_av_search_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " AV搜索 三上悠亚"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.AV_SEARCH
+    assert result.search_query == "三上悠亚"
+
+
+def test_parse_db_day_ranking_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] DB日榜"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.DB_RANKING
+    assert result.db_ranking_period == "day"
 
 
 def test_parse_jav_command_with_at() -> None:
@@ -245,7 +279,7 @@ def test_parse_jav_command_with_at() -> None:
     )
 
     assert result.action == ParseAction.JAV
-    assert result.jav_code == "ssis123"
+    assert result.jav_code == "SSIS123"
 
 
 def test_parse_fc2_jav_command_with_at() -> None:

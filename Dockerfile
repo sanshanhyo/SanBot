@@ -14,7 +14,7 @@ COPY pyproject.toml README.md ./
 COPY backend ./backend
 COPY bot ./bot
 COPY config ./config
-COPY lang ./lang
+COPY i18n ./i18n
 
 RUN python -m pip install --upgrade pip \
     && python -m pip install -e .

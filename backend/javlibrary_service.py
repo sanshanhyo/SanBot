@@ -83,7 +83,69 @@ class JavLibraryService:
             if cached is not None:
                 return cached
 
-        crawler = JavLibraryCrawler(
+        crawler = self._create_crawler()
+        try:
+            video = crawler.lookup(code)
+        except JavLibraryError as exc:
+            self._store_error(code, exc.error_code, exc.user_message)
+            raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
+        except Exception as exc:
+            logger.exception("Unexpected JAV metadata lookup error for %s.", code)
+            message = "番号信息查询失败，请稍后再试"
+            self._store_error(code, "JAVLIBRARY_ERROR", message)
+            raise JavLibraryServiceError(message, "JAVLIBRARY_ERROR") from exc
+        finally:
+            crawler.close()
+
+        payload = video.to_dict()
+        self._store_success(code, payload)
+        return payload
+
+    def search_videos(self, query: str, *, page: int = 1, limit: int = 5) -> dict[str, Any]:
+        query = " ".join(query.split()).strip()
+        if not query:
+            raise JavLibraryServiceError("搜索关键词不能为空", "JAV_SEARCH_QUERY_EMPTY")
+        crawler = self._create_crawler()
+        try:
+            results = crawler.search_javdb(query, page=page, limit=limit)
+        except JavLibraryError as exc:
+            raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
+        except Exception as exc:
+            logger.exception("Unexpected JAV metadata search error for %s.", query)
+            raise JavLibraryServiceError("番号搜索失败，请稍后再试", "JAV_SEARCH_FAILED") from exc
+        finally:
+            crawler.close()
+        return {
+            "query": query,
+            "page": page,
+            "total": len(results),
+            "results": [item.to_dict() for item in results],
+        }
+
+    def get_javdb_ranking(self, period: str, *, page: int = 1, limit: int = 10) -> dict[str, Any]:
+        labels = {"day": "日榜", "week": "周榜", "month": "月榜"}
+        if period not in labels:
+            raise JavLibraryServiceError("JavDB 排行榜类型无效", "JAV_RANKING_PERIOD_INVALID")
+        crawler = self._create_crawler()
+        try:
+            results = crawler.javdb_ranking(period, page=page, limit=limit)
+        except JavLibraryError as exc:
+            raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
+        except Exception as exc:
+            logger.exception("Unexpected JavDB ranking error for %s.", period)
+            raise JavLibraryServiceError("JavDB 排行榜获取失败，请稍后再试", "JAV_RANKING_FAILED") from exc
+        finally:
+            crawler.close()
+        return {
+            "period": period,
+            "period_label": labels[period],
+            "page": page,
+            "total": len(results),
+            "results": [item.to_dict() for item in results],
+        }
+
+    def _create_crawler(self) -> JavLibraryCrawler:
+        return JavLibraryCrawler(
             JavLibraryCrawlerConfig(
                 base_url=self.config.base_url,
                 language=self.config.language,
@@ -105,22 +167,6 @@ class JavLibraryService:
                 browser_wait_seconds=self.config.browser_wait_seconds,
             )
         )
-        try:
-            video = crawler.lookup(code)
-        except JavLibraryError as exc:
-            self._store_error(code, exc.error_code, exc.user_message)
-            raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
-        except Exception as exc:
-            logger.exception("Unexpected JAV metadata lookup error for %s.", code)
-            message = "番号信息查询失败，请稍后再试"
-            self._store_error(code, "JAVLIBRARY_ERROR", message)
-            raise JavLibraryServiceError(message, "JAVLIBRARY_ERROR") from exc
-        finally:
-            crawler.close()
-
-        payload = video.to_dict()
-        self._store_success(code, payload)
-        return payload
 
     def _get_cached(self, code: str) -> dict[str, Any] | None:
         now = self._now()
@@ -188,6 +234,8 @@ class JavLibraryService:
             return max(0, self.config.blocked_cache_ttl_seconds)
         if error_code == "JAV_FETCH_TIMEOUT":
             return max(0, self.config.timeout_cache_ttl_seconds)
+        if error_code in {"JAV_FETCH_FAILED", "JAVLIBRARY_ERROR"}:
+            return min(max(0, self.config.failure_cache_ttl_seconds), 60)
         return max(0, self.config.failure_cache_ttl_seconds)
 
     def _upsert(
