@@ -516,6 +516,33 @@ async def search_jav_videos(
     return JavSearchResponse(**result)
 
 
+@app.post("/api/jav/actors/search", response_model=JavSearchResponse)
+async def search_jav_actors(
+    payload: JavSearchRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JavSearchResponse:
+    _require_api_token(request, authorization)
+    settings: BackendSettings = request.app.state.settings
+    if not settings.enable_javlibrary:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="番号信息查询功能未启用")
+
+    limit = min(payload.limit, settings.search_result_limit)
+    try:
+        result = await asyncio.to_thread(
+            _javlibrary_service(request).search_actors,
+            payload.query,
+            page=payload.page,
+            limit=limit,
+        )
+    except JavLibraryServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"message": exc.user_message, "error_code": exc.error_code},
+        ) from exc
+    return JavSearchResponse(**result)
+
+
 @app.get("/api/javdb/rankings/{period}", response_model=JavRankingResponse)
 async def get_javdb_ranking(
     period: str,

@@ -47,6 +47,7 @@ class FakeCreateBackend:
         self.searches: list[tuple[str, int, int]] = []
         self.rankings: list[tuple[str, int, int]] = []
         self.av_searches: list[tuple[str, int, int]] = []
+        self.actor_searches: list[tuple[str, int, int]] = []
         self.db_rankings: list[tuple[str, int, int]] = []
         self.jav_queries: list[str] = []
         self.cancelled: list[str] = []
@@ -128,6 +129,30 @@ class FakeCreateBackend:
                     "url": "https://javdb.com/v/def",
                     "source": "javdb",
                     "actors": [],
+                },
+            ],
+        }
+
+    async def search_jav_actors(self, query: str, page: int = 1, limit: int = 5) -> dict:
+        self.actor_searches.append((query, page, limit))
+        return {
+            "query": query,
+            "page": page,
+            "total": 2,
+            "results": [
+                {
+                    "code": "SSIS-123",
+                    "title": "Actor Search Hit",
+                    "url": "https://javdb.com/v/abc",
+                    "source": "javdb",
+                    "actors": ["三上悠亚"],
+                },
+                {
+                    "code": "ABP-456",
+                    "title": "Another Actor Hit",
+                    "url": "https://javdb.com/v/def",
+                    "source": "javdb",
+                    "actors": ["三上悠亚", "Alice"],
                 },
             ],
         }
@@ -360,7 +385,7 @@ def test_part_filename_is_truncated_by_utf8_bytes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -> None:
+async def test_handle_group_message_sends_unknown_for_unknown_command(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
 
@@ -378,7 +403,7 @@ async def test_handle_group_message_sends_usage_without_number(tmp_path: Path) -
         TaskCollector(),
     )
 
-    assert napcat.sent == [("10001", "用法：@我 JM123456")]
+    assert napcat.sent == [("10001", "未知命令！输入‘帮助’获取命令列表")]
     assert backend.created == []
 
 
@@ -466,7 +491,8 @@ async def test_help_and_features_commands(tmp_path: Path) -> None:
         TaskCollector(),
     )
 
-    assert "使用说明" in napcat.sent[-2][1]
+    assert "SanBot 帮助" in napcat.sent[-2][1]
+    assert "@我 演员搜索 演员名" in napcat.sent[-2][1]
     assert "当前功能" in napcat.sent[-1][1]
 
 
@@ -604,7 +630,7 @@ async def test_av_search_command_sends_javdb_results(tmp_path: Path) -> None:
         _group_event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " AV搜索 三上悠亚"}},
+                {"type": "text", "data": {"text": " AV搜索 中文标题"}},
             ]
         ),
         _settings(tmp_path),
@@ -614,10 +640,35 @@ async def test_av_search_command_sends_javdb_results(tmp_path: Path) -> None:
         TaskCollector(),
     )
 
-    assert backend.av_searches == [("三上悠亚", 1, 5)]
-    assert napcat.sent[0] == ("10001", "正在搜索 AV “三上悠亚”，稍等一下下……")
-    assert "AV 搜索结果：三上悠亚" in napcat.sent[1][1]
+    assert backend.av_searches == [("中文标题", 1, 5)]
+    assert napcat.sent[0] == ("10001", "正在搜索 AV “中文标题”，稍等一下下……")
+    assert "AV 搜索结果：中文标题" in napcat.sent[1][1]
     assert "SSIS-123 A Chinese Title 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
+
+
+@pytest.mark.asyncio
+async def test_actor_search_command_sends_javdb_results(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 演员搜索 三上悠亚"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.actor_searches == [("三上悠亚", 1, 5)]
+    assert napcat.sent[0] == ("10001", "正在搜索演员“三上悠亚”，稍等一下下……")
+    assert "演员搜索结果：三上悠亚" in napcat.sent[1][1]
+    assert "SSIS-123 Actor Search Hit 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
 
 
 @pytest.mark.asyncio

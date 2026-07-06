@@ -289,6 +289,25 @@ class BackendClient:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
+    async def search_jav_actors(self, query: str, page: int = 1, limit: int = 5) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/jav/actors/search",
+                json={"query": query, "page": page, "limit": limit},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "演员搜索失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "BACKEND_ACTOR_SEARCH_FAILED")
+            if exc.response.status_code == 403:
+                error_code = "JAVLIBRARY_DISABLED"
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
     async def get_javdb_ranking(self, period: str, page: int = 1, limit: int = 10) -> dict[str, Any]:
         try:
             response = await self._client.get(

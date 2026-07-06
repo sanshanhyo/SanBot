@@ -122,6 +122,27 @@ class JavLibraryService:
             "results": [item.to_dict() for item in results],
         }
 
+    def search_actors(self, query: str, *, page: int = 1, limit: int = 5) -> dict[str, Any]:
+        query = " ".join(query.split()).strip()
+        if not query:
+            raise JavLibraryServiceError("演员名称不能为空", "JAV_ACTOR_SEARCH_QUERY_EMPTY")
+        crawler = self._create_crawler()
+        try:
+            results = crawler.search_javdb_actor(query, page=page, limit=limit)
+        except JavLibraryError as exc:
+            raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
+        except Exception as exc:
+            logger.exception("Unexpected JAV actor search error for %s.", query)
+            raise JavLibraryServiceError("演员搜索失败，请稍后再试", "JAV_ACTOR_SEARCH_FAILED") from exc
+        finally:
+            crawler.close()
+        return {
+            "query": query,
+            "page": page,
+            "total": len(results),
+            "results": [item.to_dict() for item in results],
+        }
+
     def get_javdb_ranking(self, period: str, *, page: int = 1, limit: int = 10) -> dict[str, Any]:
         labels = {"day": "日榜", "week": "周榜", "month": "月榜"}
         if period not in labels:

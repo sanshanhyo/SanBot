@@ -212,7 +212,15 @@ class JavDbProvider(BaseProvider):
         base = self.config.javdb_base_url.rstrip("/")
         search_url = f"{base}/search?q={quote(query)}&f=all&locale=zh&page={max(1, page)}"
         response = self.fetcher.get(search_url)
-        return self._parse_cards(response.text, response.url, limit=limit)
+        items = self._parse_cards(response.text, response.url, limit=_candidate_limit(limit))
+        return _sort_javdb_search_items(items, query, actor_mode=False)[:limit]
+
+    def search_actor(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        base = self.config.javdb_base_url.rstrip("/")
+        search_url = f"{base}/search?q={quote(query)}&f=actor&locale=zh&page={max(1, page)}"
+        response = self.fetcher.get(search_url)
+        items = self._parse_cards(response.text, response.url, limit=_candidate_limit(limit))
+        return _sort_javdb_search_items(items, query, actor_mode=True)[:limit]
 
     def ranking(self, period: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
         period_value = {"day": "daily", "week": "weekly", "month": "monthly"}.get(period)
@@ -494,3 +502,74 @@ def _javdb_card_date(card: Node) -> str | None:
     text = card.text()
     match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     return match.group(1) if match else None
+
+
+def _candidate_limit(limit: int) -> int:
+    safe_limit = max(1, limit)
+    return min(max(safe_limit * 3, safe_limit), 30)
+
+
+def _sort_javdb_search_items(
+    items: list[JavLibrarySearchItem],
+    query: str,
+    *,
+    actor_mode: bool,
+) -> list[JavLibrarySearchItem]:
+    return [
+        item
+        for _score, _index, item in sorted(
+            (
+                (_javdb_search_score(item, query, actor_mode=actor_mode), index, item)
+                for index, item in enumerate(items)
+            ),
+            key=lambda entry: (-entry[0], entry[1]),
+        )
+    ]
+
+
+def _javdb_search_score(item: JavLibrarySearchItem, query: str, *, actor_mode: bool) -> int:
+    query_text = _normalize_search_text(query)
+    query_code = _clean_code(query)
+    item_code = _clean_code(item.code)
+    title_text = _normalize_search_text(item.title)
+    actor_texts = [_normalize_search_text(actor) for actor in item.actors]
+
+    score = 0
+    if query_code and item_code:
+        if query_code == item_code:
+            score += 1000
+        elif query_code in item_code:
+            score += 700
+
+    if not query_text:
+        return score
+
+    title_score = _field_match_score(title_text, query_text, exact=620, prefix=460, contains=320)
+    actor_score = max(
+        (_field_match_score(actor_text, query_text, exact=900, prefix=760, contains=640) for actor_text in actor_texts),
+        default=0,
+    )
+
+    if actor_mode:
+        score += actor_score
+        score += min(title_score, 180)
+    else:
+        score += title_score
+        score += min(actor_score, 120)
+    return score
+
+
+def _field_match_score(value: str, query: str, *, exact: int, prefix: int, contains: int) -> int:
+    if not value or not query:
+        return 0
+    if value == query:
+        return exact
+    if value.startswith(query):
+        return prefix
+    if query in value:
+        return contains
+    return 0
+
+
+def _normalize_search_text(value: str) -> str:
+    return re.sub(r"[\s_\-・·./|]+", "", value).casefold()

@@ -8,6 +8,10 @@ from typing import Any
 ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
 JM_SEARCH_PATTERN = re.compile(r"(?i)^\s*JM\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
 AV_SEARCH_PATTERN = re.compile(r"(?i)^\s*(?:AV|DB)\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
+ACTOR_SEARCH_PATTERN = re.compile(
+    r"(?i)^\s*(?:演员|女优|女優|AV演员|AV女优|AV女優|DB演员|DB女优|DB女優)\s*(?:搜索|搜|查找)?\s*(.*)$",
+    re.S,
+)
 JAV_PATTERN = re.compile(
     r"(?i)^\s*(?:JAV|番号|AV)\s+([A-Z]{2,12}[-_\s]?\d{2,8}[A-Z]?|FC2(?:[-_\s]?PPV)?[-_\s]?\d{3,10})\s*$"
 )
@@ -36,8 +40,10 @@ class ParseAction(StrEnum):
     SEARCH = "search"
     RANKING = "ranking"
     AV_SEARCH = "av_search"
+    ACTOR_SEARCH = "actor_search"
     DB_RANKING = "db_ranking"
     JAV = "jav"
+    UNKNOWN = "unknown_command"
     ERROR = "error"
 
 
@@ -157,6 +163,19 @@ def extract_av_search_query(message_segments: Any) -> tuple[str | None, str | No
     return query, None
 
 
+def extract_actor_search_query(message_segments: Any) -> tuple[str | None, str | None]:
+    text = text_from_segments(message_segments)
+    match = ACTOR_SEARCH_PATTERN.match(text)
+    if match is None:
+        return None, None
+    query = re.sub(r"\s+", " ", match.group(1)).strip()
+    if not query:
+        return None, "actor_search_usage"
+    if len(query) > 60:
+        return None, "actor_search_query_too_long"
+    return query, None
+
+
 def extract_jm_ranking_period(message_segments: Any) -> str | None:
     text = re.sub(r"\s+", "", text_from_segments(message_segments)).strip()
     return JM_RANKING_ALIASES.get(text.upper())
@@ -209,6 +228,12 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     if search_query is not None:
         return ParseResult(ParseAction.SEARCH, search_query=search_query)
 
+    actor_search_query, actor_search_error = extract_actor_search_query(message_segments)
+    if actor_search_error:
+        return ParseResult(ParseAction.ERROR, error_key=actor_search_error)
+    if actor_search_query is not None:
+        return ParseResult(ParseAction.ACTOR_SEARCH, search_query=actor_search_query)
+
     av_search_query, av_search_error = extract_av_search_query(message_segments)
     if av_search_error:
         return ParseResult(ParseAction.ERROR, error_key=av_search_error)
@@ -235,5 +260,5 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     if error:
         return ParseResult(ParseAction.ERROR, error_key=error)
     if album_id is None:
-        return ParseResult(ParseAction.USAGE)
+        return ParseResult(ParseAction.UNKNOWN)
     return ParseResult(ParseAction.OK, album_id=album_id)

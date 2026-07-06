@@ -66,7 +66,7 @@ def test_usage_when_no_number() -> None:
         bot_qq_id="12345",
     )
 
-    assert result.action == ParseAction.USAGE
+    assert result.action == ParseAction.UNKNOWN
 
 
 def test_empty_at_returns_home() -> None:
@@ -145,7 +145,7 @@ def test_plain_number_requires_jm_prefix() -> None:
         bot_qq_id="12345",
     )
 
-    assert result.action == ParseAction.USAGE
+    assert result.action == ParseAction.UNKNOWN
 
 
 def test_parse_search_command_with_at() -> None:
@@ -239,7 +239,7 @@ def test_plain_ranking_command_is_no_longer_jm_ranking() -> None:
         bot_qq_id="12345",
     )
 
-    assert result.action == ParseAction.USAGE
+    assert result.action == ParseAction.UNKNOWN
 
 
 def test_parse_av_search_command_with_at() -> None:
@@ -247,14 +247,53 @@ def test_parse_av_search_command_with_at() -> None:
         _event(
             [
                 {"type": "at", "data": {"qq": "12345"}},
-                {"type": "text", "data": {"text": " AV搜索 三上悠亚"}},
+                {"type": "text", "data": {"text": " AV搜索 中文标题"}},
             ]
         ),
         bot_qq_id="12345",
     )
 
     assert result.action == ParseAction.AV_SEARCH
+    assert result.search_query == "中文标题"
+
+
+def test_parse_actor_search_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 演员搜索 三上悠亚"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.ACTOR_SEARCH
     assert result.search_query == "三上悠亚"
+
+
+def test_actor_search_without_query_returns_usage_error() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 演员搜索 "}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.ERROR
+    assert result.error_key == "actor_search_usage"
+
+
+def test_unknown_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] 来点奇怪的"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.UNKNOWN
 
 
 def test_parse_db_day_ranking_command_with_at() -> None:

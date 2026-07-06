@@ -84,6 +84,10 @@ class JavLibraryCrawler:
         provider = self._javdb_provider()
         return provider.search(query.strip(), page=page, limit=limit)
 
+    def search_javdb_actor(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+        provider = self._javdb_provider()
+        return provider.search_actor(query.strip(), page=page, limit=limit)
+
     def javdb_ranking(self, period: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
         provider = self._javdb_provider()
         return provider.ranking(period, page=page, limit=limit)

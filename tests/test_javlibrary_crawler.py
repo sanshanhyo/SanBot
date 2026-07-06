@@ -117,6 +117,22 @@ JAVDB_LIST_HTML = """
 """
 
 
+JAVDB_SORT_HTML = """
+<html>
+  <body>
+    <a class="box" href="/v/actor-match">
+      <div class="video-title">SSIS-111 Ordinary Fixture</div>
+      <div class="meta">2026-04-05 三上悠亚</div>
+    </a>
+    <a class="box" href="/v/title-match">
+      <div class="video-title">ABP-222 三上悠亚 Special Title</div>
+      <div class="meta">2026-04-04 Other Actor</div>
+    </a>
+  </body>
+</html>
+"""
+
+
 JAVDB_DETAIL_HTML = """
 <html>
   <body>
@@ -330,6 +346,48 @@ def test_crawler_searches_javdb_by_chinese_query() -> None:
     assert results[0].title == "JavDB Fixture Title"
     assert results[0].cover_url == "https://javdb.com/coverdb.jpg"
     assert "三上悠亚" in results[0].actors
+
+
+def test_crawler_title_search_prioritizes_title_match() -> None:
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.urls.append(url)
+            return FetchResponse(url, 200, JAVDB_SORT_HTML)
+
+        def close(self) -> None:
+            pass
+
+    fetcher = FakeFetcher()
+    crawler = JavLibraryCrawler(JavLibraryCrawlerConfig(), fetcher=fetcher)  # type: ignore[arg-type]
+
+    results = crawler.search_javdb("三上悠亚", limit=2)
+
+    assert fetcher.urls == ["https://javdb.com/search?q=%E4%B8%89%E4%B8%8A%E6%82%A0%E4%BA%9A&f=all&locale=zh&page=1"]
+    assert [item.code for item in results] == ["ABP-222", "SSIS-111"]
+
+
+def test_crawler_actor_search_prioritizes_actor_match() -> None:
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str) -> FetchResponse:
+            self.urls.append(url)
+            return FetchResponse(url, 200, JAVDB_SORT_HTML)
+
+        def close(self) -> None:
+            pass
+
+    fetcher = FakeFetcher()
+    crawler = JavLibraryCrawler(JavLibraryCrawlerConfig(), fetcher=fetcher)  # type: ignore[arg-type]
+
+    results = crawler.search_javdb_actor("三上悠亚", limit=2)
+
+    assert fetcher.urls == ["https://javdb.com/search?q=%E4%B8%89%E4%B8%8A%E6%82%A0%E4%BA%9A&f=actor&locale=zh&page=1"]
+    assert [item.code for item in results] == ["SSIS-111", "ABP-222"]
 
 
 def test_crawler_fetches_javdb_ranking() -> None:

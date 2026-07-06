@@ -489,6 +489,10 @@ async def handle_group_message(
         await _safe_send(napcat, group_id, lang_text("usage"))
         return
 
+    if parse_result.action == ParseAction.UNKNOWN:
+        await _safe_send(napcat, group_id, lang_text("unknown_command"))
+        return
+
     if parse_result.action == ParseAction.ERROR:
         await _safe_send(napcat, group_id, lang_text(parse_result.error_key or "usage"))
         return
@@ -521,6 +525,7 @@ async def handle_group_message(
         ParseAction.SEARCH,
         ParseAction.RANKING,
         ParseAction.AV_SEARCH,
+        ParseAction.ACTOR_SEARCH,
         ParseAction.DB_RANKING,
         ParseAction.JAV,
     }:
@@ -544,6 +549,16 @@ async def handle_group_message(
 
     if parse_result.action == ParseAction.AV_SEARCH:
         await _handle_av_search_command(
+            parse_result.search_query or "",
+            group_id,
+            settings,
+            napcat,
+            backend,
+        )
+        return
+
+    if parse_result.action == ParseAction.ACTOR_SEARCH:
+        await _handle_actor_search_command(
             parse_result.search_query or "",
             group_id,
             settings,
@@ -1090,6 +1105,38 @@ async def _handle_av_search_command(
     await _safe_send(napcat, group_id, _format_jav_search_results(query, safe_results))
 
 
+async def _handle_actor_search_command(
+    query: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    if not settings.enable_javlibrary:
+        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        return
+
+    query = re.sub(r"\s+", " ", query).strip()
+    if not query:
+        await _safe_send(napcat, group_id, lang_text("actor_search_usage"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("actor_searching", query=query))
+    try:
+        payload = await backend.search_jav_actors(query, page=1, limit=settings.search_result_limit)
+    except BackendError as exc:
+        logger.exception("Could not search JAV actor metadata for group=%s.", group_id)
+        await _safe_send(napcat, group_id, lang_text("actor_search_failed", error=exc, error_code=exc.error_code))
+        return
+
+    results = payload.get("results")
+    safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
+    if not safe_results:
+        await _safe_send(napcat, group_id, lang_text("actor_search_empty", query=query))
+        return
+    await _safe_send(napcat, group_id, _format_jav_actor_search_results(query, safe_results))
+
+
 async def _handle_javdb_ranking_command(
     period: str,
     group_id: str,
@@ -1300,6 +1347,14 @@ def _format_jav_search_results(query: str, results: list[dict[str, Any]]) -> str
     for index, result in enumerate(results[:10], start=1):
         lines.append(_format_jav_list_line(index, result, rank=index))
     lines.append(lang_text("av_search_results_footer"))
+    return "\n".join(lines)
+
+
+def _format_jav_actor_search_results(query: str, results: list[dict[str, Any]]) -> str:
+    lines = [lang_text("actor_search_results_header", query=query)]
+    for index, result in enumerate(results[:10], start=1):
+        lines.append(_format_jav_list_line(index, result, rank=index))
+    lines.append(lang_text("actor_search_results_footer"))
     return "\n".join(lines)
 
 
@@ -1535,8 +1590,10 @@ def _audit_command_label(command: str) -> str:
         "search": "audit_command_search",
         "ranking": "audit_command_ranking",
         "av_search": "audit_command_av_search",
+        "actor_search": "audit_command_actor_search",
         "db_ranking": "audit_command_db_ranking",
         "jav": "audit_command_jav",
+        "unknown_command": "audit_command_unknown",
         "error": "audit_command_error",
     }
     key = key_by_command.get(command)
@@ -1565,6 +1622,8 @@ def _audit_target(parse_result: object) -> str | None:
     if action == ParseAction.RANKING:
         return parse_result.ranking_period
     if action == ParseAction.AV_SEARCH:
+        return parse_result.search_query
+    if action == ParseAction.ACTOR_SEARCH:
         return parse_result.search_query
     if action == ParseAction.DB_RANKING:
         return parse_result.db_ranking_period
