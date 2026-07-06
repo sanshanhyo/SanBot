@@ -14,3 +14,6 @@ logs
 assets
 docs
 config/jmcomic-option.yml
+config/javlibrary-option.yml
+*.log
+tmp

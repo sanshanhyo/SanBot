@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+jav-meta = "javlibrary_crawler.cli:main"
 javlibrary = "javlibrary_crawler.cli:main"
 javv = "javlibrary_crawler.cli:main"
 
