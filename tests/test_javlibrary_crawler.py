@@ -10,7 +10,7 @@ from javlibrary_crawler import cli
 from javlibrary_crawler.client import JavLibraryCrawler, JavLibraryCrawlerConfig
 from javlibrary_crawler.errors import JavLibraryBlockedError, JavLibraryTimeoutError, JavLibraryValidationError
 from javlibrary_crawler.fetcher import FetchResponse, _parse_impersonates, looks_blocked
-from javlibrary_crawler.models import JavLibraryVideo
+from javlibrary_crawler.models import JavLibrarySearchItem, JavLibraryVideo
 from javlibrary_crawler.normalizer import normalize_code
 from javlibrary_crawler.option import create_option_by_file
 from javlibrary_crawler.parser import parse_search_results, parse_video_detail
@@ -501,6 +501,92 @@ def test_javlibrary_service_uses_error_specific_cache_ttl(tmp_path: Path) -> Non
     assert service._error_cache_ttl("JAV_FETCH_TIMEOUT") == 60
     assert service._error_cache_ttl("JAV_FETCH_FAILED") == 60
     assert service._error_cache_ttl("JAVLIBRARY_ERROR") == 60
+
+
+def test_javlibrary_service_searches_actor_alias_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen_queries: list[str] = []
+
+    class FakeCrawler:
+        def __init__(self, _config: object) -> None:
+            pass
+
+        def search_javdb_actor(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+            seen_queries.append(query)
+            if query != "橋本ありな":
+                return []
+            return [
+                JavLibrarySearchItem(
+                    code="SSIS-123",
+                    title="Alias Hit",
+                    url="https://javdb.com/v/alias",
+                    source="javdb",
+                    actors=["橋本ありな"],
+                )
+            ]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("backend.javlibrary_service.JavLibraryCrawler", FakeCrawler)
+    service = JavLibraryService(
+        JavLibraryServiceConfig(
+            data_dir=tmp_path,
+            actor_alias_online=False,
+        )
+    )
+    service.initialize()
+
+    payload = service.search_actors("桥本有菜", limit=5)
+
+    assert "桥本有菜" in seen_queries
+    assert "橋本ありな" in seen_queries
+    assert payload["results"][0]["code"] == "SSIS-123"
+    assert "橋本ありな" in service._cached_actor_aliases("桥本有菜")
+
+
+def test_javlibrary_service_loads_actor_alias_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    alias_path = tmp_path / "actor-aliases.yml"
+    alias_path.write_text(
+        """
+aliases:
+  测试译名:
+    - テスト女優
+""",
+        encoding="utf-8",
+    )
+    seen_queries: list[str] = []
+
+    class FakeCrawler:
+        def __init__(self, _config: object) -> None:
+            pass
+
+        def search_javdb_actor(self, query: str, page: int = 1, limit: int = 10) -> list[JavLibrarySearchItem]:
+            seen_queries.append(query)
+            return []
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("backend.javlibrary_service.JavLibraryCrawler", FakeCrawler)
+    service = JavLibraryService(
+        JavLibraryServiceConfig(
+            data_dir=tmp_path,
+            actor_alias_path=alias_path,
+            actor_alias_online=False,
+        )
+    )
+    service.initialize()
+
+    service.search_actors("测试译名", limit=5)
+
+    assert "测试译名" in seen_queries
+    assert "テスト女優" in seen_queries
 
 
 def test_option_file_loads_yaml(tmp_path: Path) -> None:

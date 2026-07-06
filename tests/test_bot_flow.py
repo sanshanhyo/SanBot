@@ -403,7 +403,7 @@ async def test_handle_group_message_sends_unknown_for_unknown_command(tmp_path: 
         TaskCollector(),
     )
 
-    assert napcat.sent == [("10001", "未知命令！输入‘帮助’获取命令列表")]
+    assert napcat.sent == [("10001", "我看不懂你在输入什么(つд⊂)！输入‘帮助’获取命令列表")]
     assert backend.created == []
 
 
@@ -587,7 +587,7 @@ async def test_ranking_command_sends_ranking_results(tmp_path: Path) -> None:
     )
 
     assert backend.rankings == [("day", 1, 10)]
-    assert napcat.sent[0] == ("10001", "正在获取 JM 日榜，稍等一下下……")
+    assert napcat.sent[0] == ("10001", "正在获取 JM 日榜，榜单搬运中(｡･ω･｡)ﾉ")
     assert "JM 日榜 Top 榜" in napcat.sent[1][1]
     assert "1. JM111111 First Ranking Hit" in napcat.sent[1][1]
     assert "2. JM222222 Second Ranking Hit" in napcat.sent[1][1]
@@ -613,7 +613,7 @@ async def test_jav_command_sends_video_metadata(tmp_path: Path) -> None:
     )
 
     assert backend.jav_queries == ["SSIS123"]
-    assert napcat.sent[0] == ("10001", "正在查询 SSIS123 的番号信息，稍等一下……")
+    assert napcat.sent[0] == ("10001", "正在查询 SSIS123 的番号信息，小本本翻页中(｡･ω･｡)ﾉ")
     assert "番号信息：SSIS-123" in napcat.sent[1][1]
     assert "标题：SSIS-123 A Sample Title" in napcat.sent[1][1]
     assert "演员：Alice / Bob" in napcat.sent[1][1]
@@ -641,7 +641,7 @@ async def test_av_search_command_sends_javdb_results(tmp_path: Path) -> None:
     )
 
     assert backend.av_searches == [("中文标题", 1, 5)]
-    assert napcat.sent[0] == ("10001", "正在搜索 AV “中文标题”，稍等一下下……")
+    assert napcat.sent[0] == ("10001", "正在搜索 AV “中文标题”，检索小马达启动(｀・ω・´)")
     assert "AV 搜索结果：中文标题" in napcat.sent[1][1]
     assert "SSIS-123 A Chinese Title 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
 
@@ -666,7 +666,7 @@ async def test_actor_search_command_sends_javdb_results(tmp_path: Path) -> None:
     )
 
     assert backend.actor_searches == [("三上悠亚", 1, 5)]
-    assert napcat.sent[0] == ("10001", "正在搜索演员“三上悠亚”，稍等一下下……")
+    assert napcat.sent[0] == ("10001", "正在翻小本本找演员“三上悠亚”(｡･ω･｡)ﾉ")
     assert "演员搜索结果：三上悠亚" in napcat.sent[1][1]
     assert "SSIS-123 Actor Search Hit 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
 
@@ -691,7 +691,7 @@ async def test_db_ranking_command_sends_javdb_ranking(tmp_path: Path) -> None:
     )
 
     assert backend.db_rankings == [("day", 1, 10)]
-    assert napcat.sent[0] == ("10001", "正在获取 JavDB 日榜，稍等一下下……")
+    assert napcat.sent[0] == ("10001", "正在获取 JavDB 日榜，榜单搬运中(｡･ω･｡)ﾉ")
     assert "JavDB 日榜" in napcat.sent[1][1]
     assert "1. SSIS-123 First DB Hit 演员：三上悠亚 来源：javdb" in napcat.sent[1][1]
 
@@ -857,7 +857,7 @@ async def test_search_command_can_be_disabled_by_config(tmp_path: Path) -> None:
     )
 
     assert backend.searches == []
-    assert napcat.sent[-1] == ("10001", "搜索功能还没有开启，稍后再来找我吧。")
+    assert napcat.sent[-1] == ("10001", "搜索功能还没有开启，联系我的管理者开启吧QAQ")
     assert state.pending_searches == {}
 
 

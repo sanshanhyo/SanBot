@@ -134,6 +134,10 @@ class BackendSettings:
     javlibrary_browser_channel: str | None
     javlibrary_browser_headless: bool
     javlibrary_browser_wait_seconds: float
+    jav_actor_alias_path: Path | None
+    jav_actor_alias_online: bool
+    jav_actor_alias_timeout_seconds: float
+    jav_actor_alias_candidate_limit: int
     max_active_jobs_per_group: int
     max_active_jobs_per_user: int
     max_album_pages: int
@@ -187,6 +191,10 @@ class BackendSettings:
             javlibrary_browser_channel=os.getenv("JAVLIBRARY_BROWSER_CHANNEL") or None,
             javlibrary_browser_headless=_env_bool("JAVLIBRARY_BROWSER_HEADLESS", False),
             javlibrary_browser_wait_seconds=max(1.0, _env_float("JAVLIBRARY_BROWSER_WAIT_SECONDS", 60.0)),
+            jav_actor_alias_path=Path(os.getenv("JAV_ACTOR_ALIAS_PATH", "./config/actor-aliases.yml")),
+            jav_actor_alias_online=_env_bool("JAV_ACTOR_ALIAS_ONLINE", True),
+            jav_actor_alias_timeout_seconds=max(0.5, _env_float("JAV_ACTOR_ALIAS_TIMEOUT_SECONDS", 4.0)),
+            jav_actor_alias_candidate_limit=max(1, min(12, _env_int("JAV_ACTOR_ALIAS_CANDIDATE_LIMIT", 6))),
             max_active_jobs_per_group=max(0, _env_int("MAX_ACTIVE_JOBS_PER_GROUP", 3)),
             max_active_jobs_per_user=max(0, _env_int("MAX_ACTIVE_JOBS_PER_USER", 1)),
             max_album_pages=max(0, _env_int("MAX_ALBUM_PAGES", 300)),
@@ -248,6 +256,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             browser_channel=settings.javlibrary_browser_channel,
             browser_headless=settings.javlibrary_browser_headless,
             browser_wait_seconds=settings.javlibrary_browser_wait_seconds,
+            actor_alias_path=settings.jav_actor_alias_path,
+            actor_alias_online=settings.jav_actor_alias_online,
+            actor_alias_timeout_seconds=settings.jav_actor_alias_timeout_seconds,
+            actor_alias_candidate_limit=settings.jav_actor_alias_candidate_limit,
         )
     )
     javlibrary_service.initialize()

@@ -1,0 +1,10 @@
+# Copy this file to config/actor-aliases.yml if you want to add custom actor aliases.
+# Do not put private account data or tokens in this file.
+
+aliases:
+  桥本有菜:
+    - 橋本ありな
+    - Hashimoto Arina
+  三上悠亚:
+    - 三上悠亜
+    - Mikami Yua

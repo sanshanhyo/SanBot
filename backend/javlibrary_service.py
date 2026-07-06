@@ -8,11 +8,62 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+import yaml
 from javlibrary_crawler import JavLibraryCrawler, JavLibraryCrawlerConfig
 from javlibrary_crawler.errors import JavLibraryError, JavLibraryValidationError
+from javlibrary_crawler.models import JavLibrarySearchItem
 from javlibrary_crawler.normalizer import normalize_code
 
 logger = logging.getLogger(__name__)
+
+COMMON_ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "三上悠亚": ("三上悠亜", "三上悠亞", "Mikami Yua", "Yua Mikami"),
+    "桥本有菜": ("橋本ありな", "新ありな", "新有菜", "Hashimoto Arina", "Arina Hashimoto"),
+    "河北彩花": ("河北彩伽", "河北彩花", "Kawakita Saika", "Saika Kawakita"),
+    "深田咏美": ("深田えいみ", "天海こころ", "Fukada Eimi", "Eimi Fukada"),
+    "桃乃木香奈": ("桃乃木かな", "Momogi Kana", "Kana Momogi"),
+    "相泽南": ("相沢みなみ", "Aizawa Minami", "Minami Aizawa"),
+    "枫花恋": ("楓カレン", "楓ふうあ", "Kaede Karen", "Karen Kaede"),
+    "山岸逢花": ("山岸あや花", "Yamagishi Aika", "Aika Yamagishi"),
+    "七泽米亚": ("七沢みあ", "Nanasawa Mia", "Mia Nanasawa"),
+    "纱仓真菜": ("紗倉まな", "Sakura Mana", "Mana Sakura"),
+    "樱空桃": ("桜空もも", "Sakura Momo", "Momo Sakura"),
+    "小仓由菜": ("小倉由菜", "Ogura Yuna", "Yuna Ogura"),
+    "本庄铃": ("本庄鈴", "Honjo Suzu", "Suzu Honjo"),
+    "凉森玲梦": ("涼森れむ", "Suzumori Remu", "Remu Suzumori"),
+    "吉高宁宁": ("吉高寧々", "Yoshitaka Nene", "Nene Yoshitaka"),
+    "希岛爱理": ("希島あいり", "Kijima Airi", "Airi Kijima"),
+    "天使萌": ("天使もえ", "Amatsuka Moe", "Moe Amatsuka"),
+    "葵司": ("葵つかさ", "Aoi Tsukasa", "Tsukasa Aoi"),
+    "八挂海": ("八掛うみ", "Yatsugake Umi", "Umi Yatsugake"),
+}
+
+SCRIPT_VARIANT_TABLE = str.maketrans(
+    {
+        "亚": "亜",
+        "樱": "桜",
+        "桥": "橋",
+        "泽": "沢",
+        "纱": "紗",
+        "仓": "倉",
+        "凉": "涼",
+        "宁": "寧",
+        "爱": "愛",
+        "岛": "島",
+        "绪": "緒",
+        "穗": "穂",
+        "铃": "鈴",
+        "龙": "龍",
+        "叶": "葉",
+        "宫": "宮",
+        "坂": "坂",
+        "滨": "浜",
+        "遥": "遙",
+    }
+)
+
+WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 
 
 class JavLibraryServiceError(Exception):
@@ -48,6 +99,10 @@ class JavLibraryServiceConfig:
     browser_channel: str | None = None
     browser_headless: bool = False
     browser_wait_seconds: float = 60.0
+    actor_alias_path: Path | None = None
+    actor_alias_online: bool = True
+    actor_alias_timeout_seconds: float = 4.0
+    actor_alias_candidate_limit: int = 6
 
 
 class JavLibraryService:
@@ -68,6 +123,20 @@ class JavLibraryService:
                     error_message TEXT,
                     fetched_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jav_actor_aliases (
+                    query_key TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    confidence INTEGER NOT NULL DEFAULT 50,
+                    hit_count INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (query_key, alias)
                 )
                 """
             )
@@ -126,9 +195,10 @@ class JavLibraryService:
         query = " ".join(query.split()).strip()
         if not query:
             raise JavLibraryServiceError("演员名称不能为空", "JAV_ACTOR_SEARCH_QUERY_EMPTY")
+        candidates = self._actor_search_candidates(query)
         crawler = self._create_crawler()
         try:
-            results = crawler.search_javdb_actor(query, page=page, limit=limit)
+            results = self._search_actor_candidates(crawler, query, candidates, page=page, limit=limit)
         except JavLibraryError as exc:
             raise JavLibraryServiceError(exc.user_message, exc.error_code) from exc
         except Exception as exc:
@@ -136,6 +206,7 @@ class JavLibraryService:
             raise JavLibraryServiceError("演员搜索失败，请稍后再试", "JAV_ACTOR_SEARCH_FAILED") from exc
         finally:
             crawler.close()
+        self._learn_actor_aliases_from_results(query, results)
         return {
             "query": query,
             "page": page,
@@ -164,6 +235,177 @@ class JavLibraryService:
             "total": len(results),
             "results": [item.to_dict() for item in results],
         }
+
+    def _actor_search_candidates(self, query: str) -> list[str]:
+        values: list[str] = [query]
+        script_variants = _script_variants(query)
+        file_aliases = self._file_actor_aliases(query)
+        common_aliases = _common_actor_aliases(query)
+        cached_aliases = self._cached_actor_aliases(query)
+        values.extend(script_variants)
+        values.extend(file_aliases)
+        values.extend(common_aliases)
+        values.extend(cached_aliases)
+        if self.config.actor_alias_online and not (file_aliases or common_aliases or cached_aliases):
+            values.extend(self._resolve_actor_aliases_online(query))
+        return _unique_texts(values)[: max(1, self.config.actor_alias_candidate_limit)]
+
+    def _search_actor_candidates(
+        self,
+        crawler: JavLibraryCrawler,
+        query: str,
+        candidates: list[str],
+        *,
+        page: int,
+        limit: int,
+    ) -> list[JavLibrarySearchItem]:
+        merged: dict[str, JavLibrarySearchItem] = {}
+        scores: dict[str, int] = {}
+        first_error: JavLibraryError | None = None
+        per_candidate_limit = min(max(limit * 2, limit), 10)
+        for index, candidate in enumerate(candidates):
+            try:
+                items = crawler.search_javdb_actor(candidate, page=page, limit=per_candidate_limit)
+            except JavLibraryError as exc:
+                first_error = first_error or exc
+                logger.info("Actor candidate search failed for %s via %s: %s", query, candidate, exc.user_message)
+                continue
+            for item in items:
+                key = item.code.upper()
+                score = _actor_search_result_score(item, query, candidates, candidate_index=index)
+                if score > scores.get(key, -1):
+                    merged[key] = item
+                    scores[key] = score
+                else:
+                    scores[key] = max(scores.get(key, 0), score)
+        if not merged and first_error is not None:
+            raise first_error
+        return [
+            item
+            for _score, item in sorted(
+                ((scores.get(key, 0), item) for key, item in merged.items()),
+                key=lambda entry: (-entry[0], entry[1].code),
+            )
+        ][:limit]
+
+    def _cached_actor_aliases(self, query: str) -> list[str]:
+        query_key = _actor_query_key(query)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT alias
+                FROM jav_actor_aliases
+                WHERE query_key = ?
+                ORDER BY confidence DESC, hit_count DESC, updated_at DESC
+                LIMIT 12
+                """,
+                (query_key,),
+            ).fetchall()
+        return [str(row["alias"]) for row in rows if str(row["alias"]).strip()]
+
+    def _file_actor_aliases(self, query: str) -> list[str]:
+        path = self.config.actor_alias_path
+        if path is None or not path.is_file():
+            return []
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            logger.warning("Could not read actor alias file %s: %s", path, exc)
+            return []
+        except yaml.YAMLError as exc:
+            logger.warning("Could not parse actor alias file %s: %s", path, exc)
+            return []
+        aliases = payload.get("aliases") if isinstance(payload, dict) else None
+        if not isinstance(aliases, dict):
+            return []
+        values = aliases.get(query) or aliases.get(_actor_query_key(query))
+        if isinstance(values, str):
+            return [values]
+        if isinstance(values, list):
+            return [str(value) for value in values if str(value).strip()]
+        return []
+
+    def _resolve_actor_aliases_online(self, query: str) -> list[str]:
+        timeout = max(0.5, self.config.actor_alias_timeout_seconds)
+        try:
+            with httpx.Client(timeout=timeout, headers={"User-Agent": "SanBot/0.1"}) as client:
+                search_response = client.get(
+                    WIKIDATA_API_URL,
+                    params={
+                        "action": "wbsearchentities",
+                        "format": "json",
+                        "language": "zh",
+                        "search": query,
+                        "limit": 3,
+                    },
+                )
+                search_response.raise_for_status()
+                search_payload = search_response.json()
+                ids = [
+                    str(item.get("id"))
+                    for item in search_payload.get("search", [])
+                    if isinstance(item, dict) and item.get("id")
+                ][:3]
+                if not ids:
+                    return []
+                entity_response = client.get(
+                    WIKIDATA_API_URL,
+                    params={
+                        "action": "wbgetentities",
+                        "format": "json",
+                        "ids": "|".join(ids),
+                        "props": "labels|aliases|descriptions",
+                        "languages": "zh|zh-hans|zh-hant|ja|en",
+                    },
+                )
+                entity_response.raise_for_status()
+                entity_payload = entity_response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.info("Online actor alias lookup failed for %s: %s", query, exc)
+            return []
+
+        values: list[str] = []
+        entities = entity_payload.get("entities", {})
+        if not isinstance(entities, dict):
+            return []
+        for entity in entities.values():
+            if not isinstance(entity, dict) or not _looks_like_av_actor_entity(entity):
+                continue
+            values.extend(_wikidata_entity_names(entity))
+        values = [value for value in values if value != query]
+        self._store_actor_aliases(query, values, source="wikidata", confidence=70)
+        return values
+
+    def _learn_actor_aliases_from_results(self, query: str, results: list[JavLibrarySearchItem]) -> None:
+        values: list[str] = []
+        for item in results[:8]:
+            values.extend(item.actors)
+        values = [value for value in values if _actor_query_key(value) != _actor_query_key(query)]
+        self._store_actor_aliases(query, values, source="search_result", confidence=60)
+
+    def _store_actor_aliases(self, query: str, aliases: list[str], *, source: str, confidence: int) -> None:
+        query_key = _actor_query_key(query)
+        cleaned_aliases = [alias for alias in _unique_texts(aliases) if _actor_query_key(alias) != query_key]
+        if not cleaned_aliases:
+            return
+        now = self._now().isoformat()
+        with self._connect() as conn:
+            for alias in cleaned_aliases[:20]:
+                conn.execute(
+                    """
+                    INSERT INTO jav_actor_aliases (
+                        query_key, query, alias, source, confidence, hit_count, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, 1, ?)
+                    ON CONFLICT(query_key, alias) DO UPDATE SET
+                        query = excluded.query,
+                        source = excluded.source,
+                        confidence = MAX(jav_actor_aliases.confidence, excluded.confidence),
+                        hit_count = jav_actor_aliases.hit_count + 1,
+                        updated_at = excluded.updated_at
+                    """,
+                    (query_key, query, alias, source, confidence, now),
+                )
 
     def _create_crawler(self) -> JavLibraryCrawler:
         return JavLibraryCrawler(
@@ -311,3 +553,99 @@ class JavLibraryService:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed
+
+
+def _actor_query_key(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
+def _unique_texts(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = " ".join(str(value).split()).strip()
+        if not text:
+            continue
+        key = _actor_query_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _common_actor_aliases(query: str) -> list[str]:
+    return list(COMMON_ACTOR_ALIASES.get(_actor_query_key(query), ()))
+
+
+def _script_variants(query: str) -> list[str]:
+    translated = query.translate(SCRIPT_VARIANT_TABLE)
+    variants = [translated]
+    if "亞" in query:
+        variants.append(query.replace("亞", "亜"))
+    if "亞" in translated:
+        variants.append(translated.replace("亞", "亜"))
+    return [value for value in _unique_texts(variants) if _actor_query_key(value) != _actor_query_key(query)]
+
+
+def _actor_search_result_score(
+    item: JavLibrarySearchItem,
+    query: str,
+    candidates: list[str],
+    *,
+    candidate_index: int,
+) -> int:
+    score = max(0, 1000 - candidate_index * 60)
+    actor_keys = [_actor_query_key(actor) for actor in item.actors]
+    query_key = _actor_query_key(query)
+    if query_key in actor_keys:
+        score += 420
+    for index, candidate in enumerate(candidates):
+        candidate_key = _actor_query_key(candidate)
+        if candidate_key in actor_keys:
+            score += max(60, 360 - index * 25)
+        elif any(candidate_key and candidate_key in actor_key for actor_key in actor_keys):
+            score += max(30, 180 - index * 15)
+    title_key = _actor_query_key(item.title)
+    if query_key and query_key in title_key:
+        score += 30
+    return score
+
+
+def _looks_like_av_actor_entity(entity: dict[str, Any]) -> bool:
+    descriptions = entity.get("descriptions")
+    if not isinstance(descriptions, dict):
+        return False
+    text = " ".join(
+        str(value.get("value", ""))
+        for value in descriptions.values()
+        if isinstance(value, dict)
+    ).casefold()
+    needles = (
+        "av",
+        "女優",
+        "女优",
+        "成人",
+        "porn",
+        "adult",
+        "gravure",
+        "グラビア",
+    )
+    return any(needle.casefold() in text for needle in needles)
+
+
+def _wikidata_entity_names(entity: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    labels = entity.get("labels")
+    if isinstance(labels, dict):
+        for language in ("ja", "zh", "zh-hans", "zh-hant", "en"):
+            label = labels.get(language)
+            if isinstance(label, dict) and isinstance(label.get("value"), str):
+                values.append(label["value"])
+    aliases = entity.get("aliases")
+    if isinstance(aliases, dict):
+        for language in ("ja", "zh", "zh-hans", "zh-hant", "en"):
+            for alias in aliases.get(language, []):
+                if isinstance(alias, dict) and isinstance(alias.get("value"), str):
+                    values.append(alias["value"])
+    return _unique_texts(values)

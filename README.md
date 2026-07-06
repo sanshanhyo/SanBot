@@ -135,6 +135,10 @@ JAVLIBRARY_BROWSER_PROFILE_DIR=./data/javlibrary-browser
 JAVLIBRARY_BROWSER_CHANNEL=
 JAVLIBRARY_BROWSER_HEADLESS=false
 JAVLIBRARY_BROWSER_WAIT_SECONDS=120
+JAV_ACTOR_ALIAS_PATH=./config/actor-aliases.yml
+JAV_ACTOR_ALIAS_ONLINE=true
+JAV_ACTOR_ALIAS_TIMEOUT_SECONDS=4
+JAV_ACTOR_ALIAS_CANDIDATE_LIMIT=6
 MAX_CONCURRENT_JOBS=1
 MAX_ACTIVE_JOBS_PER_GROUP=3
 MAX_ACTIVE_JOBS_PER_USER=1
@@ -214,6 +218,10 @@ DATA_DIR=./data
 | `JAVLIBRARY_BROWSER_CHANNEL` | `browser` 模式使用的本机浏览器通道，例如 `chrome` 或 `msedge`；留空使用 Playwright 自带 Chromium |
 | `JAVLIBRARY_BROWSER_HEADLESS` | `browser` 模式是否无头运行；首次验证建议 `false` |
 | `JAVLIBRARY_BROWSER_WAIT_SECONDS` | `browser` 模式等待手动验证的时间，默认 `120` 秒 |
+| `JAV_ACTOR_ALIAS_PATH` | 演员中文译名别名配置文件，默认 `./config/actor-aliases.yml` |
+| `JAV_ACTOR_ALIAS_ONLINE` | 演员搜索是否启用在线别名解析，默认 `true` |
+| `JAV_ACTOR_ALIAS_TIMEOUT_SECONDS` | 在线别名解析超时时间，默认 `4` 秒 |
+| `JAV_ACTOR_ALIAS_CANDIDATE_LIMIT` | 单次演员搜索最多尝试的候选名数量，默认 `6` |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `MAX_ACTIVE_JOBS_PER_GROUP` | 每个群允许同时存在的活跃任务数，默认 `3` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 每个用户允许同时存在的活跃任务数，默认 `1` |
@@ -450,7 +458,18 @@ JavDB 搜索和排行榜只返回公开元数据列表，不下载视频：
 @机器人 DB月榜
 ```
 
-`AV搜索` 会优先按标题排序；演员请使用独立的 `演员搜索`，例如 `@机器人 演员搜索 三上悠亚`。搜索结果里的番号可以继续用 `@机器人 JAV SSIS-123` 查看详情。
+`AV搜索` 会优先按标题排序；演员请使用独立的 `演员搜索`，例如 `@机器人 演员搜索 三上悠亚`。演员搜索会尝试中文译名、常见艺名、缓存别名和可选在线解析，搜索结果里的番号可以继续用 `@机器人 JAV SSIS-123` 查看详情。
+
+如果某个演员中文译名搜不到，可以复制 `config/actor-aliases.yml.example` 为 `config/actor-aliases.yml`，手动补一条别名：
+
+```yaml
+aliases:
+  桥本有菜:
+    - 橋本ありな
+    - Hashimoto Arina
+```
+
+后端也会把成功搜索到的演员名写入 SQLite 缓存，下次同名搜索会优先复用。
 
 输入了无法识别的内容时，机器人会回复：
 
