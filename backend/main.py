@@ -23,10 +23,12 @@ from .models import (
     AlbumRankingResponse,
     AlbumSearchRequest,
     AlbumSearchResponse,
+    JavVideoResponse,
     JobCreate,
     JobCreateResponse,
     JobResponse,
 )
+from .javlibrary_service import JavLibraryService, JavLibraryServiceConfig, JavLibraryServiceError
 from .task_manager import ActiveJobLimitError, DuplicateJobError, JobManager, JobManagerConfig
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    return items or default
+
+
 @dataclass(frozen=True)
 class BackendSettings:
     data_dir: Path
@@ -94,6 +104,30 @@ class BackendSettings:
     search_result_limit: int
     ranking_timeout_seconds: int
     ranking_result_limit: int
+    enable_javlibrary: bool
+    javlibrary_timeout_seconds: int
+    javlibrary_total_timeout_seconds: int
+    javlibrary_cache_ttl_seconds: int
+    javlibrary_failure_cache_ttl_seconds: int
+    javlibrary_not_found_cache_ttl_seconds: int
+    javlibrary_blocked_cache_ttl_seconds: int
+    javlibrary_timeout_cache_ttl_seconds: int
+    javlibrary_base_url: str
+    javlibrary_language: str
+    javlibrary_provider_order: tuple[str, ...]
+    javdb_base_url: str
+    javbus_base_url: str
+    jav321_base_url: str
+    javlibrary_fetcher: str
+    javlibrary_user_agent: str | None
+    javlibrary_cookie: str | None
+    javlibrary_proxy: str | None
+    javlibrary_impersonate: str
+    javlibrary_retry_times: int
+    javlibrary_browser_profile_dir: str | None
+    javlibrary_browser_channel: str | None
+    javlibrary_browser_headless: bool
+    javlibrary_browser_wait_seconds: float
     max_active_jobs_per_group: int
     max_active_jobs_per_user: int
     max_album_pages: int
@@ -119,6 +153,33 @@ class BackendSettings:
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", 5))),
             ranking_timeout_seconds=max(1, _env_int("RANKING_TIMEOUT_SECONDS", 20)),
             ranking_result_limit=max(1, min(20, _env_int("RANKING_RESULT_LIMIT", 10))),
+            enable_javlibrary=_env_bool("ENABLE_JAVLIBRARY", True),
+            javlibrary_timeout_seconds=max(1, _env_int("JAVLIBRARY_TIMEOUT_SECONDS", 8)),
+            javlibrary_total_timeout_seconds=max(1, _env_int("JAVLIBRARY_TOTAL_TIMEOUT_SECONDS", 15)),
+            javlibrary_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_CACHE_TTL_SECONDS", 604800)),
+            javlibrary_failure_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS", 600)),
+            javlibrary_not_found_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS", 86400)),
+            javlibrary_blocked_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS", 120)),
+            javlibrary_timeout_cache_ttl_seconds=max(0, _env_int("JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS", 60)),
+            javlibrary_base_url=os.getenv("JAVLIBRARY_BASE_URL", "https://www.javlibrary.com"),
+            javlibrary_language=os.getenv("JAVLIBRARY_LANGUAGE", "cn"),
+            javlibrary_provider_order=_env_csv(
+                "JAVLIBRARY_PROVIDER_ORDER",
+                ("javlibrary", "jav321", "javdb", "javbus"),
+            ),
+            javdb_base_url=os.getenv("JAVDB_BASE_URL", "https://javdb.com"),
+            javbus_base_url=os.getenv("JAVBUS_BASE_URL", "https://www.javbus.com"),
+            jav321_base_url=os.getenv("JAV321_BASE_URL", "https://www.jav321.com"),
+            javlibrary_fetcher=os.getenv("JAVLIBRARY_FETCHER", "curl"),
+            javlibrary_user_agent=os.getenv("JAVLIBRARY_USER_AGENT") or None,
+            javlibrary_cookie=os.getenv("JAVLIBRARY_COOKIE") or None,
+            javlibrary_proxy=os.getenv("JAVLIBRARY_PROXY") or None,
+            javlibrary_impersonate=os.getenv("JAVLIBRARY_IMPERSONATE", "random"),
+            javlibrary_retry_times=max(1, _env_int("JAVLIBRARY_RETRY_TIMES", 1)),
+            javlibrary_browser_profile_dir=os.getenv("JAVLIBRARY_BROWSER_PROFILE_DIR") or None,
+            javlibrary_browser_channel=os.getenv("JAVLIBRARY_BROWSER_CHANNEL") or None,
+            javlibrary_browser_headless=_env_bool("JAVLIBRARY_BROWSER_HEADLESS", False),
+            javlibrary_browser_wait_seconds=max(1.0, _env_float("JAVLIBRARY_BROWSER_WAIT_SECONDS", 60.0)),
             max_active_jobs_per_group=max(0, _env_int("MAX_ACTIVE_JOBS_PER_GROUP", 3)),
             max_active_jobs_per_user=max(0, _env_int("MAX_ACTIVE_JOBS_PER_USER", 1)),
             max_album_pages=max(0, _env_int("MAX_ALBUM_PAGES", 300)),
@@ -151,6 +212,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.settings = settings
     app.state.job_manager = manager
+    javlibrary_service = JavLibraryService(
+        JavLibraryServiceConfig(
+            data_dir=settings.data_dir,
+            base_url=settings.javlibrary_base_url,
+            language=settings.javlibrary_language,
+            provider_order=settings.javlibrary_provider_order,
+            javdb_base_url=settings.javdb_base_url,
+            javbus_base_url=settings.javbus_base_url,
+            jav321_base_url=settings.jav321_base_url,
+            timeout_seconds=settings.javlibrary_timeout_seconds,
+            total_timeout_seconds=settings.javlibrary_total_timeout_seconds,
+            cache_ttl_seconds=settings.javlibrary_cache_ttl_seconds,
+            failure_cache_ttl_seconds=settings.javlibrary_failure_cache_ttl_seconds,
+            not_found_cache_ttl_seconds=settings.javlibrary_not_found_cache_ttl_seconds,
+            blocked_cache_ttl_seconds=settings.javlibrary_blocked_cache_ttl_seconds,
+            timeout_cache_ttl_seconds=settings.javlibrary_timeout_cache_ttl_seconds,
+            fetcher=settings.javlibrary_fetcher,
+            user_agent=settings.javlibrary_user_agent,
+            cookie=settings.javlibrary_cookie,
+            proxy=settings.javlibrary_proxy,
+            impersonate=settings.javlibrary_impersonate,
+            retry_times=settings.javlibrary_retry_times,
+            browser_profile_dir=settings.javlibrary_browser_profile_dir,
+            browser_channel=settings.javlibrary_browser_channel,
+            browser_headless=settings.javlibrary_browser_headless,
+            browser_wait_seconds=settings.javlibrary_browser_wait_seconds,
+        )
+    )
+    javlibrary_service.initialize()
+    app.state.javlibrary_service = javlibrary_service
     await manager.start()
     try:
         yield
@@ -163,6 +254,10 @@ app = FastAPI(title="SanBot Backend", lifespan=lifespan)
 
 def _manager(request: Request) -> JobManager:
     return request.app.state.job_manager
+
+
+def _javlibrary_service(request: Request) -> JavLibraryService:
+    return request.app.state.javlibrary_service
 
 
 def _require_api_token(request: Request, authorization: str | None) -> None:
@@ -344,6 +439,40 @@ async def get_album_ranking(
         result_path.unlink(missing_ok=True)
 
     return AlbumRankingResponse(**result)
+
+
+@app.get("/api/jav/videos/{code}", response_model=JavVideoResponse)
+async def get_jav_video(
+    code: str,
+    request: Request,
+    force_refresh: bool = Query(default=False),
+    authorization: str | None = Header(default=None),
+) -> JavVideoResponse:
+    _require_api_token(request, authorization)
+    settings: BackendSettings = request.app.state.settings
+    if not settings.enable_javlibrary:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="番号信息查询功能未启用")
+
+    try:
+        payload = await asyncio.to_thread(
+            _javlibrary_service(request).lookup_video,
+            code,
+            force_refresh=force_refresh,
+        )
+    except JavLibraryServiceError as exc:
+        status_code = status.HTTP_502_BAD_GATEWAY
+        if exc.error_code == "JAV_CODE_INVALID":
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        elif exc.error_code == "JAV_NOT_FOUND":
+            status_code = status.HTTP_404_NOT_FOUND
+        elif exc.error_code == "JAV_FETCH_TIMEOUT":
+            status_code = status.HTTP_504_GATEWAY_TIMEOUT
+        raise HTTPException(
+            status_code=status_code,
+            detail={"message": exc.user_message, "error_code": exc.error_code},
+        ) from exc
+
+    return JavVideoResponse(**payload)
 
 
 async def _run_preview_worker(

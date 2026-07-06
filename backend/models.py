@@ -81,3 +81,21 @@ class AlbumRankingResponse(BaseModel):
     page: int
     total: int
     results: list[AlbumRankingItem]
+
+
+class JavVideoResponse(BaseModel):
+    code: str = Field(pattern=r"^[A-Z0-9]+(?:-[A-Z0-9]+){1,3}$")
+    title: str
+    url: str
+    source: str = "javlibrary"
+    cover_url: str | None = None
+    release_date: str | None = None
+    runtime_minutes: int | None = None
+    director: str | None = None
+    studio: str | None = None
+    publisher: str | None = None
+    series: str | None = None
+    actors: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    rating: float | None = None
+    cache_hit: bool = False

@@ -115,6 +115,7 @@ class BotSettings:
     max_upload_filename_bytes: int = MAX_UPLOAD_FILENAME_BYTES
     upload_retries: int = DEFAULT_UPLOAD_RETRIES
     enable_search: bool = True
+    enable_javlibrary: bool = True
     search_result_limit: int = DEFAULT_SEARCH_RESULT_LIMIT
     search_confirm_timeout_seconds: int = 600
     ranking_result_limit: int = DEFAULT_RANKING_RESULT_LIMIT
@@ -155,6 +156,7 @@ class BotSettings:
             ),
             upload_retries=max(1, _env_int("NAPCAT_UPLOAD_RETRIES", DEFAULT_UPLOAD_RETRIES)),
             enable_search=_env_bool("ENABLE_SEARCH", True),
+            enable_javlibrary=_env_bool("ENABLE_JAVLIBRARY", True),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", DEFAULT_SEARCH_RESULT_LIMIT))),
             search_confirm_timeout_seconds=max(30, _env_int("SEARCH_CONFIRM_TIMEOUT_SECONDS", 600)),
             ranking_result_limit=max(1, min(20, _env_int("RANKING_RESULT_LIMIT", DEFAULT_RANKING_RESULT_LIMIT))),
@@ -358,11 +360,12 @@ async def handle_group_message(
         return
 
     logger.info(
-        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s group_id=%s user_id=%s",
+        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s jav_code=%s group_id=%s user_id=%s",
         parse_result.action,
         parse_result.album_id,
         parse_result.search_query,
         parse_result.ranking_period,
+        parse_result.jav_code,
         group_id,
         user_id,
     )
@@ -398,7 +401,7 @@ async def handle_group_message(
         await _send_group_history(group_id, napcat, backend)
         return
 
-    if parse_result.action in {ParseAction.OK, ParseAction.SEARCH, ParseAction.RANKING}:
+    if parse_result.action in {ParseAction.OK, ParseAction.SEARCH, ParseAction.RANKING, ParseAction.JAV}:
         remaining = _command_cooldown_remaining(group_id, user_id, settings, state, now)
         if remaining > 0:
             await _safe_send(napcat, group_id, lang_text("command_cooldown", seconds=math.ceil(remaining)))
@@ -420,6 +423,16 @@ async def handle_group_message(
     if parse_result.action == ParseAction.RANKING:
         await _handle_ranking_command(
             parse_result.ranking_period or "day",
+            group_id,
+            settings,
+            napcat,
+            backend,
+        )
+        return
+
+    if parse_result.action == ParseAction.JAV:
+        await _handle_jav_command(
+            parse_result.jav_code or "",
             group_id,
             settings,
             napcat,
@@ -870,6 +883,34 @@ async def _handle_ranking_command(
     await _safe_send(napcat, group_id, _format_ranking_results(payload, safe_results))
 
 
+async def _handle_jav_command(
+    code: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    if not settings.enable_javlibrary:
+        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("jav_fetching", code=code.upper()))
+    try:
+        payload = await backend.get_jav_video(code)
+    except BackendError as exc:
+        logger.exception("Could not fetch JAV metadata for %s.", code)
+        await _safe_send(napcat, group_id, lang_text("jav_failed", error=exc, error_code=exc.error_code))
+        return
+
+    await _safe_send(napcat, group_id, _format_jav_video(payload))
+    cover_url = payload.get("cover_url")
+    if isinstance(cover_url, str) and cover_url:
+        asyncio.create_task(
+            _send_jav_cover(str(payload.get("code") or code), group_id, cover_url, napcat),
+            name=f"jav-cover-{payload.get('code') or code}",
+        )
+
+
 async def _handle_active_cancel(
     event: dict[str, Any],
     group_id: str,
@@ -1018,6 +1059,57 @@ def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any
         lines.append(lang_text("ranking_result_line", rank=rank, album_id=album_id, title=title))
     lines.append(lang_text("ranking_results_footer"))
     return "\n".join(lines)
+
+
+def _format_jav_video(payload: dict[str, Any]) -> str:
+    code = str(payload.get("code") or "?")
+    title = _truncate_display_text(str(payload.get("title") or code), 80)
+    lines = [lang_text("jav_result_header", code=code), lang_text("jav_title_line", title=title)]
+    source = payload.get("source")
+    if source:
+        lines.append(lang_text("jav_source_line", source=str(source)))
+
+    release_date = payload.get("release_date")
+    if release_date:
+        lines.append(lang_text("jav_release_date_line", release_date=release_date))
+
+    runtime = payload.get("runtime_minutes")
+    if isinstance(runtime, int) and runtime > 0:
+        lines.append(lang_text("jav_runtime_line", runtime=runtime))
+
+    for key, label_key in [
+        ("studio", "jav_studio_line"),
+        ("publisher", "jav_publisher_line"),
+        ("series", "jav_series_line"),
+        ("director", "jav_director_line"),
+    ]:
+        value = payload.get(key)
+        if value:
+            lines.append(lang_text(label_key, value=_truncate_display_text(str(value), 40)))
+
+    rating = payload.get("rating")
+    if isinstance(rating, (int, float)):
+        lines.append(lang_text("jav_rating_line", rating=f"{float(rating):.1f}"))
+
+    actors = _format_name_list(payload.get("actors"), limit=8)
+    if actors:
+        lines.append(lang_text("jav_actors_line", actors=actors))
+
+    genres = _format_name_list(payload.get("genres"), limit=10)
+    if genres:
+        lines.append(lang_text("jav_genres_line", genres=genres))
+
+    url = payload.get("url")
+    if url:
+        lines.append(lang_text("jav_url_line", url=url))
+    return "\n".join(lines)
+
+
+def _format_name_list(value: object, *, limit: int) -> str:
+    if not isinstance(value, list):
+        return ""
+    names = [_truncate_display_text(str(item), 18) for item in value[:limit] if str(item).strip()]
+    return " / ".join(names)
 
 
 def _format_admin_status(payload: dict[str, Any], uploading_count: int) -> str:
@@ -1212,6 +1304,13 @@ async def _send_album_cover(
                 await asyncio.sleep(min(10, 2 * attempt))
             else:
                 logger.exception("Could not send cached album cover for JM%s.", album_id)
+
+
+async def _send_jav_cover(code: str, group_id: str, cover_url: str, napcat: NapCatClient) -> None:
+    try:
+        await napcat.send_group_image(group_id, cover_url)
+    except NapCatAPIError:
+        logger.warning("Could not send JAV metadata cover for %s.", code, exc_info=True)
 
 
 async def _download_cover_image(cover_url: str, cache_dir: Path, album_id: str) -> Path:

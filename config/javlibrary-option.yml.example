@@ -1,0 +1,30 @@
+base_url: https://www.javlibrary.com
+language: cn
+provider_order:
+  - javlibrary
+  - jav321
+  - javdb
+  - javbus
+javdb_base_url: https://javdb.com
+javbus_base_url: https://www.javbus.com
+jav321_base_url: https://www.jav321.com
+timeout_seconds: 8
+total_timeout_seconds: 15
+fetcher: curl
+
+request:
+  user_agent:
+  cookie:
+  proxy:
+  # random selects from a conservative curl-cffi browser fingerprint list.
+  impersonate: random
+  retry_times: 1
+
+browser:
+  # Relative paths are resolved from this option file's directory.
+  profile_dir: ../data/javlibrary-browser
+  # Optional: use an installed browser instead of Playwright's bundled Chromium.
+  # Common values: chrome, msedge
+  channel:
+  headless: false
+  wait_seconds: 120

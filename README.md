@@ -47,6 +47,13 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
+如果要使用 Javlibrary 的 `browser` 抓取模式，请安装浏览器可选依赖并下载 Chromium：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[browser,test]"
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
 后续从 GitHub 拉取更新后，也建议重新执行一次安装命令，确保新增依赖例如 `img2pdf` 已安装。
 
 如果 PyPI 访问较慢，可以使用镜像：
@@ -96,6 +103,30 @@ SEARCH_RESULT_LIMIT=5
 SEARCH_CONFIRM_TIMEOUT_SECONDS=600
 RANKING_TIMEOUT_SECONDS=20
 RANKING_RESULT_LIMIT=10
+ENABLE_JAVLIBRARY=true
+JAVLIBRARY_TIMEOUT_SECONDS=8
+JAVLIBRARY_TOTAL_TIMEOUT_SECONDS=15
+JAVLIBRARY_CACHE_TTL_SECONDS=604800
+JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS=600
+JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS=86400
+JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS=120
+JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS=60
+JAVLIBRARY_BASE_URL=https://www.javlibrary.com
+JAVLIBRARY_LANGUAGE=cn
+JAVLIBRARY_PROVIDER_ORDER=javlibrary,jav321,javdb,javbus
+JAVDB_BASE_URL=https://javdb.com
+JAVBUS_BASE_URL=https://www.javbus.com
+JAV321_BASE_URL=https://www.jav321.com
+JAVLIBRARY_FETCHER=curl
+JAVLIBRARY_USER_AGENT=
+JAVLIBRARY_COOKIE=
+JAVLIBRARY_PROXY=
+JAVLIBRARY_IMPERSONATE=random
+JAVLIBRARY_RETRY_TIMES=1
+JAVLIBRARY_BROWSER_PROFILE_DIR=./data/javlibrary-browser
+JAVLIBRARY_BROWSER_CHANNEL=
+JAVLIBRARY_BROWSER_HEADLESS=false
+JAVLIBRARY_BROWSER_WAIT_SECONDS=120
 MAX_CONCURRENT_JOBS=1
 MAX_ACTIVE_JOBS_PER_GROUP=3
 MAX_ACTIVE_JOBS_PER_USER=1
@@ -146,6 +177,30 @@ DATA_DIR=./data
 | `SEARCH_CONFIRM_TIMEOUT_SECONDS` | 搜索结果出来后等待用户回复序号的时间，默认 `600` 秒 |
 | `RANKING_TIMEOUT_SECONDS` | 后端排行榜子进程超时时间，默认 `20` 秒 |
 | `RANKING_RESULT_LIMIT` | 每次排行榜返回结果数，默认 `10`，最大 `20` |
+| `ENABLE_JAVLIBRARY` | 是否启用番号信息查询，默认 `true` |
+| `JAVLIBRARY_TIMEOUT_SECONDS` | 番号数据源单次请求超时时间，默认 `8` 秒 |
+| `JAVLIBRARY_TOTAL_TIMEOUT_SECONDS` | 单次番号查询总超时时间，默认 `15` 秒；超过后会停止继续尝试后续数据源 |
+| `JAVLIBRARY_CACHE_TTL_SECONDS` | 番号信息成功查询缓存时间，默认 `604800` 秒，即 7 天 |
+| `JAVLIBRARY_FAILURE_CACHE_TTL_SECONDS` | 普通抓取失败缓存时间，默认 `600` 秒，防止重复打源站 |
+| `JAVLIBRARY_NOT_FOUND_CACHE_TTL_SECONDS` | 未找到番号时的失败缓存时间，默认 `86400` 秒 |
+| `JAVLIBRARY_BLOCKED_CACHE_TTL_SECONDS` | 数据源阻断请求时的失败缓存时间，默认 `120` 秒 |
+| `JAVLIBRARY_TIMEOUT_CACHE_TTL_SECONDS` | 数据源超时时的失败缓存时间，默认 `60` 秒 |
+| `JAVLIBRARY_BASE_URL` | Javlibrary 源站地址，默认 `https://www.javlibrary.com` |
+| `JAVLIBRARY_LANGUAGE` | Javlibrary 语言路径，默认 `cn` |
+| `JAVLIBRARY_PROVIDER_ORDER` | 番号数据源尝试顺序，默认 `javlibrary,jav321,javdb,javbus` |
+| `JAVDB_BASE_URL` | JavDB 源站地址，默认 `https://javdb.com` |
+| `JAVBUS_BASE_URL` | JavBus 源站地址，默认 `https://www.javbus.com` |
+| `JAV321_BASE_URL` | Jav321 源站地址，默认 `https://www.jav321.com` |
+| `JAVLIBRARY_FETCHER` | 番号数据源抓取模式，`curl`、`http` 或 `browser`，默认 `curl` |
+| `JAVLIBRARY_USER_AGENT` | 番号数据源请求使用的 User-Agent，留空使用内置浏览器 UA |
+| `JAVLIBRARY_COOKIE` | 请求 Cookie，留空则不带；不要提交到 Git |
+| `JAVLIBRARY_PROXY` | 请求代理地址，留空则直连 |
+| `JAVLIBRARY_IMPERSONATE` | `curl` 模式使用的 curl-cffi 浏览器指纹目标，默认 `random`；可填单个值或逗号分隔列表 |
+| `JAVLIBRARY_RETRY_TIMES` | 临时网络错误重试次数，默认 `1`；多数据源会继续尝试下一个源 |
+| `JAVLIBRARY_BROWSER_PROFILE_DIR` | `browser` 模式使用的持久化浏览器资料目录 |
+| `JAVLIBRARY_BROWSER_CHANNEL` | `browser` 模式使用的本机浏览器通道，例如 `chrome` 或 `msedge`；留空使用 Playwright 自带 Chromium |
+| `JAVLIBRARY_BROWSER_HEADLESS` | `browser` 模式是否无头运行；首次验证建议 `false` |
+| `JAVLIBRARY_BROWSER_WAIT_SECONDS` | `browser` 模式等待手动验证的时间，默认 `120` 秒 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `MAX_ACTIVE_JOBS_PER_GROUP` | 每个群允许同时存在的活跃任务数，默认 `3` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 每个用户允许同时存在的活跃任务数，默认 `1` |
@@ -169,7 +224,7 @@ DATA_DIR=./data
 | `JMCOMIC_OPTION_PATH` | JMComic 配置文件路径 |
 | `DATA_DIR` | 数据目录 |
 
-不要提交 `.env`、JMComic Cookie、NapCat token 或任何登录信息。
+不要提交 `.env`、JMComic Cookie、Javlibrary Cookie、NapCat token 或任何登录信息。
 
 ## NapCatQQ 配置
 
@@ -252,6 +307,81 @@ PDF 生成后会校验：
 .\.venv\Scripts\python.exe -m bot.main
 ```
 
+## JAV Metadata Crawler 独立使用
+
+SanBot 内置了一份 JAV Metadata Crawler，因此不需要额外安装也能使用群内番号查询。这个 crawler 也拆成了独立仓库：[sanshanhyo/jav-meta-crawler](https://github.com/sanshanhyo/jav-meta-crawler)。
+
+`javlibrary_crawler` 可以不启动 QQ 机器人单独使用。它只查询公开番号元数据，不下载视频。安装项目后会注册 `jav-meta`、`javlibrary` 和 `javv` 三个命令：
+
+```bash
+pip install .
+jav-meta SSIS-123
+javlibrary SSIS-123
+javlibrary SSIS-123 --json
+javv FC2-PPV-1234567 -o ./config/javlibrary-option.yml
+javlibrary SSIS-123 -o ./config/javlibrary-option.yml --fetcher curl
+javlibrary SSIS-123 --providers jav321,javdb,javbus --timeout 8 --total-timeout 15
+python -m javlibrary_crawler SSIS-123
+```
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--json` | 输出 JSON，方便脚本读取 |
+| `-o, --option` | 指定配置文件，支持 YAML、JSON、TOML |
+| `--providers` | 指定数据源顺序，例如 `jav321,javdb,javbus` |
+| `--timeout` | 单个请求超时秒数 |
+| `--total-timeout` | 整次查询总超时秒数 |
+| `--proxy` | 指定 HTTP 代理，例如 `http://127.0.0.1:7890` |
+| `--fetcher` | 抓取模式，支持 `curl`、`http`、`browser` |
+
+也可以作为 Python 库使用：
+
+```python
+from javlibrary_crawler import create_option_by_file, lookup
+
+option = create_option_by_file("./config/javlibrary-option.yml")
+video = lookup("SSIS-123", option)
+print(video.title)
+```
+
+配置文件示例见 `config/javlibrary-option.yml.example`：
+
+```yaml
+base_url: https://www.javlibrary.com
+language: cn
+provider_order:
+  - javlibrary
+  - jav321
+  - javdb
+  - javbus
+javdb_base_url: https://javdb.com
+javbus_base_url: https://www.javbus.com
+jav321_base_url: https://www.jav321.com
+timeout_seconds: 8
+total_timeout_seconds: 15
+fetcher: curl
+
+request:
+  user_agent:
+  cookie:
+  proxy:
+  impersonate: random
+  retry_times: 1
+
+browser:
+  # 相对路径会按这个配置文件所在目录解析，建议放到 git 忽略的 data 目录。
+  profile_dir: ../data/javlibrary-browser
+  # 可选：使用本机真实浏览器通道，例如 chrome 或 msedge。
+  channel:
+  headless: false
+  wait_seconds: 120
+```
+
+命令行参数会覆盖环境变量和配置文件。遇到源站阻断时会返回 `JAV_SOURCE_BLOCKED`，查询超时返回 `JAV_FETCH_TIMEOUT`，未找到返回 `JAV_NOT_FOUND`。
+默认的 `curl` 模式参考 `jmcomic` 和 MDCX 的网络层思路，使用 `curl-cffi` 发起请求并支持浏览器指纹候选、Cookie、代理、保守重试和失败缓存。查询时会按 `provider_order` 依次尝试 Javlibrary、Jav321、JavDB、JavBus，先返回第一个成功的数据源。`browser` 模式只作为备用调试手段；它首次验证更适合在 Windows 桌面或有图形界面的主机上完成，纯 Docker/SSH 服务器通常没有可见浏览器窗口。
+
 群内使用示例：
 
 ```text
@@ -262,6 +392,7 @@ PDF 生成后会校验：
 @机器人 今日排行榜
 @机器人 周榜
 @机器人 月榜
+@机器人 JAV SSIS-123
 @机器人 我的任务
 ```
 
@@ -283,6 +414,15 @@ PDF 生成后会校验：
 @机器人 周榜
 @机器人 月榜
 ```
+
+番号信息查询只返回公开元数据，不下载视频：
+
+```text
+@机器人 JAV SSIS-123
+@机器人 番号 FC2-PPV-1234567
+```
+
+结果会包含标题、发行日期、时长、制作商、演员、类别、评分、链接和封面。查询结果会缓存到 SQLite，源站阻断、超时或未找到时会返回错误码。
 
 输入了无法识别的内容时，机器人会回复：
 
@@ -467,6 +607,8 @@ Invoke-RestMethod `
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/api/albums/{album_id}/preview` | 获取漫画封面、标题、页数和预计时间 |
 | `POST` | `/api/search` | 关键词搜索漫画；如需关闭可设置 `ENABLE_SEARCH=false` |
+| `GET` | `/api/rankings/{period}` | 查询 JM 排行榜，`period` 支持 `day`、`week`、`month` |
+| `GET` | `/api/jav/videos/{code}` | 查询番号元数据；如需关闭可设置 `ENABLE_JAVLIBRARY=false` |
 | `POST` | `/api/jobs` | 创建下载任务 |
 | `GET` | `/api/jobs/active?group_id=...&user_id=...` | 查询某个群用户当前活跃任务 |
 | `POST` | `/api/jobs/active/cancel?group_id=...&user_id=...` | 取消某个群用户当前活跃任务 |
@@ -503,11 +645,23 @@ project/
 ├─ backend/
 │  ├─ main.py
 │  ├─ search_worker.py
+│  ├─ ranking_worker.py
+│  ├─ javlibrary_service.py
 │  ├─ downloader.py
 │  ├─ task_manager.py
 │  └─ models.py
+├─ javlibrary_crawler/
+│  ├─ client.py
+│  ├─ cli.py
+│  ├─ fetcher.py
+│  ├─ parser.py
+│  ├─ normalizer.py
+│  ├─ option.py
+│  ├─ models.py
+│  └─ errors.py
 ├─ config/
-│  └─ jmcomic-option.yml.example
+│  ├─ jmcomic-option.yml.example
+│  └─ javlibrary-option.yml.example
 ├─ lang/
 │  └─ zh_CN.json
 ├─ data/
@@ -521,6 +675,7 @@ project/
 
 - 不要把 Token、Cookie、账号密码提交到仓库。
 - 只允许处理数字形式 JM 编号。
+- 番号信息功能只查询公开元数据，不下载视频。
 - 不允许用户控制文件路径。
 - 不使用 `shell=True`。
 - 下载、转换、上传失败时，群内只返回简短错误，详细异常写入日志。

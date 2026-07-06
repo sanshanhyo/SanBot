@@ -46,6 +46,7 @@ class FakeCreateBackend:
         self.previewed: list[str] = []
         self.searches: list[tuple[str, int, int]] = []
         self.rankings: list[tuple[str, int, int]] = []
+        self.jav_queries: list[str] = []
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -95,6 +96,24 @@ class FakeCreateBackend:
                 {"rank": 1, "album_id": "111111", "title": "First Ranking Hit", "tags": []},
                 {"rank": 2, "album_id": "222222", "title": "Second Ranking Hit", "tags": []},
             ],
+        }
+
+    async def get_jav_video(self, code: str) -> dict:
+        self.jav_queries.append(code)
+        return {
+            "code": "SSIS-123",
+            "title": "SSIS-123 A Sample Title",
+            "url": "https://www.javlibrary.com/cn/?v=abc123",
+            "cover_url": "https://example.test/jav-cover.jpg",
+            "release_date": "2026-01-02",
+            "runtime_minutes": 123,
+            "studio": "A Studio",
+            "publisher": "A Publisher",
+            "series": "A Series",
+            "director": "A Director",
+            "rating": 4.5,
+            "actors": ["Alice", "Bob"],
+            "genres": ["Drama", "HD"],
         }
 
     async def create_job(
@@ -456,6 +475,34 @@ async def test_ranking_command_sends_ranking_results(tmp_path: Path) -> None:
     assert "JM 日榜 Top 榜" in napcat.sent[1][1]
     assert "1. JM111111 First Ranking Hit" in napcat.sent[1][1]
     assert "2. JM222222 Second Ranking Hit" in napcat.sent[1][1]
+
+
+@pytest.mark.asyncio
+async def test_jav_command_sends_video_metadata(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.jav_queries == ["ssis123"]
+    assert napcat.sent[0] == ("10001", "正在查询 SSIS123 的番号信息，稍等一下……")
+    assert "番号信息：SSIS-123" in napcat.sent[1][1]
+    assert "标题：SSIS-123 A Sample Title" in napcat.sent[1][1]
+    assert "演员：Alice / Bob" in napcat.sent[1][1]
+    await asyncio.sleep(0)
+    assert napcat.sent[-1] == ("10001", "IMAGE:https://example.test/jav-cover.jpg")
 
 
 @pytest.mark.asyncio

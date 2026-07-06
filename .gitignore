@@ -7,4 +7,6 @@ __pycache__/
 .venv/
 venv/
 data/
+.javlibrary-browser/
 config/jmcomic-option.yml
+config/javlibrary-option.yml

@@ -231,3 +231,28 @@ def test_parse_month_ranking_command_with_at() -> None:
 
     assert result.action == ParseAction.RANKING
     assert result.ranking_period == "month"
+
+
+def test_parse_jav_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.JAV
+    assert result.jav_code == "ssis123"
+
+
+def test_parse_fc2_jav_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] 番号 FC2 PPV 1234567"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.JAV
+    assert result.jav_code == "FC2PPV1234567"

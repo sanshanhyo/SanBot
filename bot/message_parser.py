@@ -7,6 +7,9 @@ from typing import Any
 
 ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
 SEARCH_PATTERN = re.compile(r"^\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
+JAV_PATTERN = re.compile(
+    r"(?i)^\s*(?:JAV|番号|AV)\s+([A-Z]{2,12}[-_\s]?\d{2,8}[A-Z]?|FC2(?:[-_\s]?PPV)?[-_\s]?\d{3,10})\s*$"
+)
 RANKING_ALIASES = {
     "日榜": "day",
     "今日榜": "day",
@@ -36,6 +39,7 @@ class ParseAction(StrEnum):
     OK = "ok"
     SEARCH = "search"
     RANKING = "ranking"
+    JAV = "jav"
     ERROR = "error"
 
 
@@ -45,6 +49,7 @@ class ParseResult:
     album_id: str | None = None
     search_query: str | None = None
     ranking_period: str | None = None
+    jav_code: str | None = None
     error_key: str | None = None
 
 
@@ -152,6 +157,14 @@ def extract_ranking_period(message_segments: Any) -> str | None:
     return RANKING_ALIASES.get(text)
 
 
+def extract_jav_code(message_segments: Any) -> str | None:
+    text = text_from_segments(message_segments)
+    match = JAV_PATTERN.match(text)
+    if match is None:
+        return None
+    return re.sub(r"\s+", "", match.group(1)).strip()
+
+
 def extract_control_action(message_segments: Any) -> ParseAction | None:
     text = re.sub(r"\s+", " ", text_from_segments(message_segments)).strip()
     if not text:
@@ -189,6 +202,10 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
     ranking_period = extract_ranking_period(message_segments)
     if ranking_period is not None:
         return ParseResult(ParseAction.RANKING, ranking_period=ranking_period)
+
+    jav_code = extract_jav_code(message_segments)
+    if jav_code is not None:
+        return ParseResult(ParseAction.JAV, jav_code=jav_code)
 
     control_action = extract_control_action(message_segments)
     if control_action is not None:
