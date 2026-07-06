@@ -46,6 +46,8 @@ DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 120
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
 DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+DEFAULT_JAV_STILLS_MIN_IMAGE_WIDTH = 300
+DEFAULT_JAV_STILLS_MIN_IMAGE_HEIGHT = 200
 DEFAULT_MISSAV_MAX_GROUP_MEMBERS = 150
 COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
@@ -144,6 +146,8 @@ class BotSettings:
     jav_stills_pdf_download_concurrency: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY
     jav_stills_pdf_download_timeout_seconds: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS
     jav_stills_max_image_bytes: int = DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES
+    jav_stills_min_image_width: int = DEFAULT_JAV_STILLS_MIN_IMAGE_WIDTH
+    jav_stills_min_image_height: int = DEFAULT_JAV_STILLS_MIN_IMAGE_HEIGHT
     enable_missav_link: bool = False
     missav_base_url: str = "https://missav.live"
     missav_allowed_group_ids: set[str] = field(default_factory=set)
@@ -229,6 +233,14 @@ class BotSettings:
             jav_stills_max_image_bytes=max(
                 256 * 1024,
                 _env_int("JAV_STILLS_MAX_IMAGE_BYTES", DEFAULT_JAV_STILLS_MAX_IMAGE_BYTES),
+            ),
+            jav_stills_min_image_width=max(
+                0,
+                _env_int("JAV_STILLS_MIN_IMAGE_WIDTH", DEFAULT_JAV_STILLS_MIN_IMAGE_WIDTH),
+            ),
+            jav_stills_min_image_height=max(
+                0,
+                _env_int("JAV_STILLS_MIN_IMAGE_HEIGHT", DEFAULT_JAV_STILLS_MIN_IMAGE_HEIGHT),
             ),
             enable_missav_link=_env_bool("ENABLE_MISSAV_LINK", False),
             missav_base_url=(os.getenv("MISSAV_BASE_URL") or "https://missav.live").rstrip("/"),
@@ -1563,6 +1575,8 @@ async def _build_jav_stills_pdf(
                     index,
                     semaphore,
                     settings.jav_stills_max_image_bytes,
+                    settings.jav_stills_min_image_width,
+                    settings.jav_stills_min_image_height,
                 )
                 for index, url in enumerate(urls, start=1)
             ]
@@ -1596,6 +1610,8 @@ async def _download_jav_still_image(
     index: int,
     semaphore: asyncio.Semaphore,
     max_bytes: int,
+    min_width: int,
+    min_height: int,
 ) -> Path | None:
     tmp_path: Path | None = None
     async with semaphore:
@@ -1630,6 +1646,10 @@ async def _download_jav_still_image(
 
             if tmp_path is None or not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
                 raise JavStillsPdfError("empty still image")
+            if not _is_jav_still_large_enough(tmp_path, min_width, min_height):
+                logger.info("Skip tiny JAV still image %s.", image_url)
+                tmp_path.unlink(missing_ok=True)
+                return None
             tmp_path.replace(image_path)
             return image_path
         except Exception:
@@ -1637,6 +1657,25 @@ async def _download_jav_still_image(
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
             return None
+
+
+def _is_jav_still_large_enough(image_path: Path, min_width: int, min_height: int) -> bool:
+    if min_width <= 0 and min_height <= 0:
+        return True
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.debug("Pillow is unavailable; skip JAV still dimension check.")
+        return True
+
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+    except Exception:
+        logger.debug("Could not inspect JAV still image dimensions: %s", image_path, exc_info=True)
+        return True
+
+    return (min_width <= 0 or width >= min_width) and (min_height <= 0 or height >= min_height)
 
 
 def _jav_stills_request_headers(payload: dict[str, Any]) -> dict[str, str]:

@@ -550,6 +550,10 @@ def _javdb_preview_image_urls(root: Node, page_url: str, cover_url: str | None) 
     for node in root.find_all():
         if node.tag not in {"img", "a"}:
             continue
+        if node.tag == "img" and node.parent is not None:
+            parent_href = _absolute_url(node.parent.attrs.get("href"), page_url)
+            if parent_href and _looks_like_image_url(parent_href):
+                continue
         class_text = node.attrs.get("class", "").lower()
         parent_class = node.parent.attrs.get("class", "").lower() if node.parent is not None else ""
         id_text = node.attrs.get("id", "").lower()
@@ -558,10 +562,15 @@ def _javdb_preview_image_urls(root: Node, page_url: str, cover_url: str | None) 
             token in marker
             for token in ("preview", "sample", "screenshot", "gallery", "tile", "cover")
         )
-        attr_names = ("src", "data-src", "href") if looks_like_preview else ("data-src", "href")
+        if node.tag == "a":
+            attr_names = ("href", "data-src", "src")
+        else:
+            attr_names = ("data-src", "src") if looks_like_preview else ("data-src",)
         for attr in attr_names:
             url = _absolute_url(node.attrs.get(attr), page_url)
             if not url or not _looks_like_image_url(url):
+                continue
+            if _looks_like_thumbnail_image_url(url):
                 continue
             clean_url = url.split("?", 1)[0]
             if cover_key and clean_url == cover_key:
@@ -580,6 +589,20 @@ def _looks_like_video_url(value: str) -> bool:
 def _looks_like_image_url(value: str) -> bool:
     clean = value.split("?", 1)[0].lower()
     return clean.endswith((".jpg", ".jpeg", ".png", ".webp"))
+
+
+def _looks_like_thumbnail_image_url(value: str) -> bool:
+    path = urlparse(value).path.lower()
+    name = path.rsplit("/", 1)[-1]
+    if "/thumbs/" in path or "/thumb/" in path:
+        return True
+    if re.search(r"(?:^|[_-])s[_-]\d", name):
+        return True
+    if re.search(r"(?:^|[_-])thumb(?:[_-]|\.)", name):
+        return True
+    if re.search(r"[_-](?:120|150|180|200)x(?:120|150|180|200)(?=\.)", name):
+        return True
+    return False
 
 
 def _candidate_limit(limit: int) -> int:

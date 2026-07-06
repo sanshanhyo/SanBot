@@ -152,6 +152,8 @@ JAVDB_DETAIL_HTML = """
     <div class="preview-images">
       <a href="/samples/SSIS-123-1.jpg"><img src="/thumbs/SSIS-123-1.jpg"></a>
       <img data-src="/samples/SSIS-123-2.webp">
+      <a href="/samples/SSIS-123_l_3.jpg"><img src="/samples/SSIS-123_s_3.jpg"></a>
+      <img data-src="/samples/SSIS-123_s_4.jpg">
     </div>
   </body>
 </html>
@@ -333,6 +335,7 @@ def test_crawler_parses_javdb_fixture() -> None:
     assert video.preview_image_urls == [
         "https://javdb.com/samples/SSIS-123-1.jpg",
         "https://javdb.com/samples/SSIS-123-2.webp",
+        "https://javdb.com/samples/SSIS-123_l_3.jpg",
     ]
     assert video.resource_page_url == "https://javdb.com/v/db123"
     assert fetcher.urls == ["https://javdb.com/search?q=SSIS-123&locale=zh", "https://javdb.com/v/db123"]

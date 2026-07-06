@@ -16,7 +16,7 @@ from javlibrary_crawler.models import JavLibrarySearchItem
 from javlibrary_crawler.normalizer import normalize_code
 
 logger = logging.getLogger(__name__)
-JAV_VIDEO_CACHE_SCHEMA_VERSION = 2
+JAV_VIDEO_CACHE_SCHEMA_VERSION = 3
 
 COMMON_ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
     "三上悠亚": ("三上悠亜", "三上悠亞", "Mikami Yua", "Yua Mikami"),

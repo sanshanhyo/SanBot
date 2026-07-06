@@ -393,6 +393,18 @@ def test_split_pdf_for_upload_creates_valid_parts(tmp_path: Path) -> None:
             assert len(part_pdf.pages) == 1
 
 
+def test_jav_still_dimension_filter_skips_tiny_images(tmp_path: Path) -> None:
+    from PIL import Image
+
+    tiny_path = tmp_path / "tiny.jpg"
+    large_path = tmp_path / "large.jpg"
+    Image.new("RGB", (120, 90), "white").save(tiny_path)
+    Image.new("RGB", (640, 360), "white").save(large_path)
+
+    assert bot_main._is_jav_still_large_enough(tiny_path, 300, 200) is False
+    assert bot_main._is_jav_still_large_enough(large_path, 300, 200) is True
+
+
 def test_part_filename_is_truncated_by_utf8_bytes() -> None:
     filename = "[JM434803]" + ("譚雅奉旨生子之事" * 30) + ".pdf"
 
