@@ -564,7 +564,7 @@ async def handle_group_message(
 
     pending_jav_action = state.pending_jav_actions.get((group_id, user_id))
     started = time.monotonic()
-    if await _handle_pending_jav_action(event, group_id, user_id, settings, state, napcat):
+    if await _handle_pending_jav_action(event, group_id, user_id, settings, state, napcat, backend):
         await _record_command_audit(
             backend,
             group_id,
@@ -1352,6 +1352,7 @@ async def _handle_pending_jav_action(
     settings: BotSettings,
     state: BotState,
     napcat: NapCatClient,
+    backend: BackendClient,
 ) -> bool:
     pending = state.pending_jav_actions.get((group_id, user_id))
     if pending is None:
@@ -1374,12 +1375,21 @@ async def _handle_pending_jav_action(
     if action == "resource":
         await _send_jav_resource_page(pending.payload, group_id, napcat)
     elif action == "trailer":
-        await _send_jav_trailer(pending.payload, group_id, settings, napcat)
+        payload = await _refresh_jav_payload_for_trailer(pending, backend)
+        await _send_jav_trailer(payload, group_id, settings, napcat)
     elif action == "stills":
         await _send_jav_stills(pending.payload, group_id, settings, napcat)
     elif action == "stream":
         await _send_missav_link(pending.payload, group_id, settings, napcat)
     return True
+
+
+async def _refresh_jav_payload_for_trailer(pending: PendingJavActions, backend: BackendClient) -> dict[str, Any]:
+    try:
+        return await backend.get_jav_video(pending.code, force_refresh=True)
+    except BackendError:
+        logger.warning("Could not refresh JAV metadata before trailer action; falling back to pending payload.", exc_info=True)
+        return pending.payload
 
 
 async def _available_jav_actions(

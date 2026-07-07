@@ -60,6 +60,7 @@ class FakeCreateBackend:
         self.actor_searches: list[tuple[str, int, int]] = []
         self.db_rankings: list[tuple[str, int, int]] = []
         self.jav_queries: list[str] = []
+        self.jav_force_refreshes: list[bool] = []
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -183,8 +184,9 @@ class FakeCreateBackend:
             ],
         }
 
-    async def get_jav_video(self, code: str) -> dict:
+    async def get_jav_video(self, code: str, *, force_refresh: bool = False) -> dict:
         self.jav_queries.append(code)
+        self.jav_force_refreshes.append(force_refresh)
         return {
             "code": "SSIS-123",
             "title": "SSIS-123 A Sample Title",
@@ -882,6 +884,58 @@ async def test_jav_trailer_action_converts_m3u8_to_local_mp4(
     assert napcat.videos
     assert napcat.videos[-1][1].endswith(".mp4")
     assert ".m3u8" not in napcat.videos[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_jav_trailer_action_refreshes_metadata_before_sending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.trailer_url = "https://javdb.com/trailers/OLD.m3u8"
+    state = BotState()
+    used_trailer_urls: list[str] = []
+
+    async def fake_prepare_jav_trailer_mp4(
+        payload: dict,
+        trailer_url: str,
+        dest_dir: Path,
+        settings: BotSettings,
+    ) -> Path:
+        used_trailer_urls.append(trailer_url)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        mp4_path = dest_dir / "[SSIS-123] 预告片.mp4"
+        mp4_path.write_bytes(b"fake mp4")
+        return mp4_path
+
+    monkeypatch.setattr(bot_main, "_prepare_jav_trailer_mp4", fake_prepare_jav_trailer_mp4)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    backend.trailer_url = "https://javdb.com/trailers/NEW.m3u8"
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "预告片"}}]),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.jav_force_refreshes == [False, True]
+    assert used_trailer_urls == ["https://javdb.com/trailers/NEW.m3u8"]
 
 
 @pytest.mark.asyncio

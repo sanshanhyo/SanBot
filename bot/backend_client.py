@@ -327,9 +327,10 @@ class BackendClient:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
-    async def get_jav_video(self, code: str) -> dict[str, Any]:
+    async def get_jav_video(self, code: str, *, force_refresh: bool = False) -> dict[str, Any]:
         try:
-            response = await self._client.get(f"/api/jav/videos/{code}", headers=self._headers())
+            params = {"force_refresh": "true"} if force_refresh else None
+            response = await self._client.get(f"/api/jav/videos/{code}", params=params, headers=self._headers())
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = self._detail(exc.response)
