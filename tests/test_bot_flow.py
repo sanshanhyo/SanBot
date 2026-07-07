@@ -405,6 +405,16 @@ def test_jav_still_dimension_filter_skips_tiny_images(tmp_path: Path) -> None:
     assert bot_main._is_jav_still_large_enough(large_path, 300, 200) is True
 
 
+def test_jav_trailer_headers_include_cookie_and_logs_are_sanitized(tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), jav_trailer_cookie="session=secret")
+    payload = {"url": "https://javdb.com/v/abc123"}
+
+    headers = bot_main._jav_trailer_request_headers(payload, settings)
+
+    assert headers["Cookie"] == "session=secret"
+    assert bot_main._sanitize_ffmpeg_message("open https://example.test/a.m3u8?sign=secret failed") == "open <url> failed"
+
+
 def test_part_filename_is_truncated_by_utf8_bytes() -> None:
     filename = "[JM434803]" + ("譚雅奉旨生子之事" * 30) + ".pdf"
 

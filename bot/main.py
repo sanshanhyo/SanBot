@@ -149,6 +149,7 @@ class BotSettings:
     jav_trailer_ffmpeg_path: str = "ffmpeg"
     jav_trailer_convert_timeout_seconds: int = DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS
     jav_trailer_max_bytes: int = DEFAULT_JAV_TRAILER_MAX_BYTES
+    jav_trailer_cookie: str | None = None
     enable_jav_stills: bool = False
     jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
     jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
@@ -222,6 +223,7 @@ class BotSettings:
                 1 * 1024 * 1024,
                 _env_int("JAV_TRAILER_MAX_BYTES", DEFAULT_JAV_TRAILER_MAX_BYTES),
             ),
+            jav_trailer_cookie=os.getenv("JAV_TRAILER_COOKIE") or os.getenv("JAVLIBRARY_COOKIE") or None,
             enable_jav_stills=_env_bool("ENABLE_JAV_STILLS", False),
             jav_stills_max_count=max(1, min(6, _env_int("JAV_STILLS_MAX_COUNT", DEFAULT_JAV_STILLS_MAX_COUNT))),
             jav_stills_max_group_members=max(
@@ -1525,7 +1527,7 @@ async def _download_jav_trailer_mp4(
 ) -> None:
     tmp_path = mp4_path.with_name(f"{mp4_path.name}.tmp")
     tmp_path.unlink(missing_ok=True)
-    headers = _jav_trailer_request_headers(payload)
+    headers = _jav_trailer_request_headers(payload, settings)
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -1565,7 +1567,7 @@ async def _convert_jav_trailer_to_mp4(
 ) -> None:
     tmp_path = mp4_path.with_name(f"{mp4_path.name}.tmp.mp4")
     tmp_path.unlink(missing_ok=True)
-    headers = _ffmpeg_headers_arg(_jav_trailer_request_headers(payload))
+    headers = _ffmpeg_headers_arg(_jav_trailer_request_headers(payload, settings))
     copy_command = _ffmpeg_trailer_command(
         settings.jav_trailer_ffmpeg_path,
         trailer_url,
@@ -1650,7 +1652,7 @@ async def _run_ffmpeg(command: list[str], timeout_seconds: int) -> None:
         raise JavTrailerError("ffmpeg timed out", "TRAILER_MP4_TIMEOUT") from exc
 
     if process.returncode != 0:
-        message = (stderr or stdout).decode("utf-8", errors="replace")[-500:]
+        message = _sanitize_ffmpeg_message((stderr or stdout).decode("utf-8", errors="replace")[-500:])
         logger.warning("ffmpeg failed: %s", message)
         raise JavTrailerError("ffmpeg failed", "FFMPEG_CONVERT_FAILED")
 
@@ -1659,9 +1661,13 @@ def _ffmpeg_headers_arg(headers: dict[str, str]) -> str:
     return "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
 
 
-def _jav_trailer_request_headers(payload: dict[str, Any]) -> dict[str, str]:
+def _sanitize_ffmpeg_message(message: str) -> str:
+    return re.sub(r"https?://\S+", "<url>", message)
+
+
+def _jav_trailer_request_headers(payload: dict[str, Any], settings: BotSettings) -> dict[str, str]:
     referer = _jav_resource_page_url(payload) or _payload_str(payload, "url") or "https://javdb.com/"
-    return {
+    headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -1670,6 +1676,9 @@ def _jav_trailer_request_headers(payload: dict[str, Any]) -> dict[str, str]:
         "Accept": "video/webm,video/mp4,video/*,*/*;q=0.8",
         "Referer": referer,
     }
+    if settings.jav_trailer_cookie:
+        headers["Cookie"] = settings.jav_trailer_cookie
+    return headers
 
 
 def _jav_trailer_needs_local_mp4(trailer_url: str) -> bool:
