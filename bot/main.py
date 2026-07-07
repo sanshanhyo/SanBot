@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import time
@@ -12,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -43,6 +44,7 @@ DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
 DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
 DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS = 180
 DEFAULT_JAV_TRAILER_MAX_BYTES = 100 * 1024 * 1024
+DEFAULT_JAV_TRAILER_IMPERSONATES = ("chrome123", "chrome124", "chrome131", "firefox135", "chrome")
 DEFAULT_JAV_STILLS_MAX_COUNT = 3
 DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 0
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
@@ -150,6 +152,7 @@ class BotSettings:
     jav_trailer_convert_timeout_seconds: int = DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS
     jav_trailer_max_bytes: int = DEFAULT_JAV_TRAILER_MAX_BYTES
     jav_trailer_cookie: str | None = None
+    jav_trailer_impersonate: str = "random"
     enable_jav_stills: bool = False
     jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
     jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
@@ -224,6 +227,9 @@ class BotSettings:
                 _env_int("JAV_TRAILER_MAX_BYTES", DEFAULT_JAV_TRAILER_MAX_BYTES),
             ),
             jav_trailer_cookie=os.getenv("JAV_TRAILER_COOKIE") or os.getenv("JAVLIBRARY_COOKIE") or None,
+            jav_trailer_impersonate=(
+                os.getenv("JAV_TRAILER_IMPERSONATE") or os.getenv("JAVLIBRARY_IMPERSONATE") or "random"
+            ),
             enable_jav_stills=_env_bool("ENABLE_JAV_STILLS", False),
             jav_stills_max_count=max(1, min(6, _env_int("JAV_STILLS_MAX_COUNT", DEFAULT_JAV_STILLS_MAX_COUNT))),
             jav_stills_max_group_members=max(
@@ -1567,12 +1573,19 @@ async def _convert_jav_trailer_to_mp4(
 ) -> None:
     tmp_path = mp4_path.with_name(f"{mp4_path.name}.tmp.mp4")
     tmp_path.unlink(missing_ok=True)
-    headers = _ffmpeg_headers_arg(_jav_trailer_request_headers(payload, settings))
+    hls_dir = (mp4_path.parent / "hls").resolve()
+    local_input = await asyncio.to_thread(
+        _materialize_hls_playlist_sync,
+        trailer_url,
+        hls_dir,
+        payload,
+        settings,
+    )
     copy_command = _ffmpeg_trailer_command(
         settings.jav_trailer_ffmpeg_path,
-        trailer_url,
+        str(local_input),
         tmp_path,
-        headers,
+        "",
         transcode=False,
     )
     try:
@@ -1582,9 +1595,9 @@ async def _convert_jav_trailer_to_mp4(
         tmp_path.unlink(missing_ok=True)
         transcode_command = _ffmpeg_trailer_command(
             settings.jav_trailer_ffmpeg_path,
-            trailer_url,
+            str(local_input),
             tmp_path,
-            headers,
+            "",
             transcode=True,
         )
         await _run_ffmpeg(transcode_command, settings.jav_trailer_convert_timeout_seconds)
@@ -1593,6 +1606,216 @@ async def _convert_jav_trailer_to_mp4(
         tmp_path.unlink(missing_ok=True)
         raise JavTrailerError("ffmpeg did not produce mp4", "TRAILER_MP4_EMPTY")
     tmp_path.replace(mp4_path)
+
+
+def _materialize_hls_playlist_sync(
+    trailer_url: str,
+    hls_dir: Path,
+    payload: dict[str, Any],
+    settings: BotSettings,
+) -> Path:
+    try:
+        from curl_cffi import requests as curl_requests
+    except ImportError as exc:
+        raise JavTrailerError("curl-cffi is not installed", "CURL_CFFI_NOT_FOUND") from exc
+
+    hls_dir = hls_dir.resolve()
+    shutil.rmtree(hls_dir, ignore_errors=True)
+    hls_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = _jav_trailer_request_headers(payload, settings)
+    session = curl_requests.Session(
+        impersonate=_choose_jav_trailer_impersonate(settings.jav_trailer_impersonate),
+        headers=headers,
+    )
+    try:
+        fetcher = _HlsAssetFetcher(
+            session=session,
+            exceptions=curl_requests.exceptions,
+            timeout_seconds=settings.jav_trailer_convert_timeout_seconds,
+            max_bytes=settings.jav_trailer_max_bytes,
+        )
+        playlist_url = trailer_url
+        playlist_text = fetcher.fetch_text(playlist_url)
+        variant_url = _select_hls_variant_url(playlist_text, playlist_url)
+        if variant_url:
+            playlist_url = variant_url
+            playlist_text = fetcher.fetch_text(playlist_url)
+        local_playlist = _rewrite_hls_playlist_to_local(
+            playlist_text,
+            playlist_url,
+            hls_dir,
+            fetcher,
+        )
+    finally:
+        session.close()
+
+    if not local_playlist.is_file() or local_playlist.stat().st_size <= 0:
+        raise JavTrailerError("empty HLS playlist", "TRAILER_HLS_EMPTY")
+    return local_playlist
+
+
+class _HlsAssetFetcher:
+    def __init__(
+        self,
+        *,
+        session: Any,
+        exceptions: Any,
+        timeout_seconds: int,
+        max_bytes: int,
+    ) -> None:
+        self.session = session
+        self.exceptions = exceptions
+        self.timeout_seconds = timeout_seconds
+        self.max_bytes = max_bytes
+        self.total_bytes = 0
+
+    def fetch_text(self, url: str) -> str:
+        content = self.fetch_bytes(url, count_toward_limit=False)
+        text = content.decode("utf-8", errors="replace")
+        if "#EXTM3U" not in text[:1000]:
+            raise JavTrailerError("invalid HLS playlist", "TRAILER_HLS_INVALID")
+        return text
+
+    def fetch_bytes(self, url: str, *, count_toward_limit: bool = True) -> bytes:
+        try:
+            response = self.session.get(url, timeout=self.timeout_seconds, allow_redirects=True)
+        except self.exceptions.Timeout as exc:
+            raise JavTrailerError("HLS request timed out", "TRAILER_MP4_TIMEOUT") from exc
+        except self.exceptions.RequestException as exc:
+            raise JavTrailerError("HLS request failed", "TRAILER_HLS_DOWNLOAD_FAILED") from exc
+
+        if response.status_code >= 400:
+            logger.warning("JAV trailer HLS request failed with HTTP %s.", response.status_code)
+            raise JavTrailerError("HLS request rejected", "TRAILER_HLS_DOWNLOAD_FAILED")
+
+        content = response.content or b""
+        if count_toward_limit:
+            self.total_bytes += len(content)
+            if self.total_bytes > self.max_bytes:
+                raise JavTrailerError("trailer HLS assets are too large", "TRAILER_MP4_TOO_LARGE")
+        return content
+
+
+def _rewrite_hls_playlist_to_local(
+    playlist_text: str,
+    playlist_url: str,
+    hls_dir: Path,
+    fetcher: _HlsAssetFetcher,
+) -> Path:
+    local_playlist = (hls_dir / "playlist.m3u8").resolve()
+    if not local_playlist.is_relative_to(hls_dir):
+        raise JavTrailerError("invalid HLS path", "INVALID_TRAILER_PATH")
+
+    lines = playlist_text.splitlines()
+    rewritten: list[str] = []
+    segment_index = 0
+    key_index = 0
+    map_index = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            rewritten.append(line)
+            continue
+        if stripped.startswith("#EXT-X-KEY"):
+            uri = _extract_hls_uri_attribute(stripped)
+            if uri and not uri.lower().startswith("data:"):
+                local_name = f"key_{key_index:03d}{_hls_local_extension(uri, '.key')}"
+                key_index += 1
+                _write_hls_asset(urljoin(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
+                rewritten.append(_replace_hls_uri_attribute(line, local_name))
+            else:
+                rewritten.append(line)
+            continue
+        if stripped.startswith("#EXT-X-MAP"):
+            uri = _extract_hls_uri_attribute(stripped)
+            if uri and not uri.lower().startswith("data:"):
+                local_name = f"map_{map_index:03d}{_hls_local_extension(uri, '.mp4')}"
+                map_index += 1
+                _write_hls_asset(urljoin(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
+                rewritten.append(_replace_hls_uri_attribute(line, local_name))
+            else:
+                rewritten.append(line)
+            continue
+        if stripped.startswith("#"):
+            rewritten.append(line)
+            continue
+
+        local_name = f"segment_{segment_index:05d}{_hls_local_extension(stripped, '.ts')}"
+        segment_index += 1
+        _write_hls_asset(urljoin(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
+        rewritten.append(local_name)
+
+    if segment_index == 0:
+        raise JavTrailerError("HLS playlist has no segments", "TRAILER_HLS_EMPTY")
+
+    local_playlist.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    return local_playlist
+
+
+def _write_hls_asset(asset_url: str, asset_path: Path, hls_dir: Path, fetcher: _HlsAssetFetcher) -> None:
+    asset_path = asset_path.resolve()
+    if not asset_path.is_relative_to(hls_dir):
+        raise JavTrailerError("invalid HLS asset path", "INVALID_TRAILER_PATH")
+    asset_path.write_bytes(fetcher.fetch_bytes(asset_url))
+
+
+def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None:
+    lines = playlist_text.splitlines()
+    candidates: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#EXT-X-STREAM-INF"):
+            continue
+        bandwidth = _hls_stream_bandwidth(stripped)
+        for next_line in lines[index + 1 :]:
+            uri = next_line.strip()
+            if not uri or uri.startswith("#"):
+                continue
+            candidates.append((bandwidth, urljoin(playlist_url, uri)))
+            break
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _hls_stream_bandwidth(line: str) -> int:
+    match = re.search(r"\bBANDWIDTH=(\d+)", line)
+    if not match:
+        return 0
+    return int(match.group(1))
+
+
+def _extract_hls_uri_attribute(line: str) -> str | None:
+    match = re.search(r'URI="([^"]+)"', line)
+    if match:
+        return match.group(1)
+    match = re.search(r"URI=([^,]+)", line)
+    if match:
+        return match.group(1).strip().strip("'\"")
+    return None
+
+
+def _replace_hls_uri_attribute(line: str, local_name: str) -> str:
+    if re.search(r'URI="[^"]+"', line):
+        return re.sub(r'URI="[^"]+"', f'URI="{local_name}"', line, count=1)
+    return re.sub(r"URI=([^,]+)", f'URI="{local_name}"', line, count=1)
+
+
+def _hls_local_extension(uri: str, fallback: str) -> str:
+    suffix = Path(urlsplit(uri).path).suffix.lower()
+    if 1 < len(suffix) <= 8 and re.fullmatch(r"\.[a-z0-9]+", suffix):
+        return suffix
+    return fallback
+
+
+def _choose_jav_trailer_impersonate(value: str | None) -> str:
+    if value is None or value.strip().lower() in {"", "random"}:
+        return random.choice(DEFAULT_JAV_TRAILER_IMPERSONATES)
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        return random.choice(DEFAULT_JAV_TRAILER_IMPERSONATES)
+    return random.choice(items)
 
 
 def _ffmpeg_trailer_command(
@@ -1657,10 +1880,6 @@ async def _run_ffmpeg(command: list[str], timeout_seconds: int) -> None:
         raise JavTrailerError("ffmpeg failed", "FFMPEG_CONVERT_FAILED")
 
 
-def _ffmpeg_headers_arg(headers: dict[str, str]) -> str:
-    return "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
-
-
 def _sanitize_ffmpeg_message(message: str) -> str:
     return re.sub(r"https?://\S+", "<url>", message)
 
@@ -1673,8 +1892,13 @@ def _jav_trailer_request_headers(payload: dict[str, Any], settings: BotSettings)
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/126.0.0.0 Safari/537.36"
         ),
-        "Accept": "video/webm,video/mp4,video/*,*/*;q=0.8",
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7",
+        "Origin": "https://javdb.com",
         "Referer": referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
     }
     if settings.jav_trailer_cookie:
         headers["Cookie"] = settings.jav_trailer_cookie

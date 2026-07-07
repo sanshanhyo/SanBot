@@ -415,6 +415,77 @@ def test_jav_trailer_headers_include_cookie_and_logs_are_sanitized(tmp_path: Pat
     assert bot_main._sanitize_ffmpeg_message("open https://example.test/a.m3u8?sign=secret failed") == "open <url> failed"
 
 
+def test_jav_trailer_hls_variant_selects_highest_bandwidth() -> None:
+    playlist = """#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+low/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720
+high/index.m3u8
+"""
+
+    assert (
+        bot_main._select_hls_variant_url(playlist, "https://media.example.test/master.m3u8")
+        == "https://media.example.test/high/index.m3u8"
+    )
+
+
+def test_jav_trailer_hls_uri_rewrite_and_extensions() -> None:
+    assert (
+        bot_main._replace_hls_uri_attribute('#EXT-X-KEY:METHOD=AES-128,URI="../key.bin",IV=0x1', "key_000.key")
+        == '#EXT-X-KEY:METHOD=AES-128,URI="key_000.key",IV=0x1'
+    )
+    assert bot_main._hls_local_extension("https://media.example.test/segment.m4s?token=secret", ".ts") == ".m4s"
+    assert bot_main._hls_local_extension("https://media.example.test/segment?token=secret", ".ts") == ".ts"
+
+
+def test_jav_trailer_hls_materializes_local_playlist(tmp_path: Path) -> None:
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def fetch_bytes(self, url: str) -> bytes:
+            self.urls.append(url)
+            return f"asset:{url}".encode()
+
+    playlist = """#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI="../key.bin"
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:1.0,
+seg-000.ts?token=secret
+#EXTINF:1.0,
+https://cdn.example.test/video/seg-001.ts
+#EXT-X-ENDLIST
+"""
+    fetcher = FakeFetcher()
+
+    local_playlist = bot_main._rewrite_hls_playlist_to_local(
+        playlist,
+        "https://media.example.test/path/index.m3u8",
+        tmp_path,
+        fetcher,  # type: ignore[arg-type]
+    )
+
+    assert local_playlist.read_text(encoding="utf-8") == """#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI="key_000.bin"
+#EXT-X-MAP:URI="map_000.mp4"
+#EXTINF:1.0,
+segment_00000.ts
+#EXTINF:1.0,
+segment_00001.ts
+#EXT-X-ENDLIST
+"""
+    assert (tmp_path / "key_000.bin").is_file()
+    assert (tmp_path / "map_000.mp4").is_file()
+    assert (tmp_path / "segment_00000.ts").is_file()
+    assert (tmp_path / "segment_00001.ts").is_file()
+    assert fetcher.urls == [
+        "https://media.example.test/key.bin",
+        "https://media.example.test/path/init.mp4",
+        "https://media.example.test/path/seg-000.ts?token=secret",
+        "https://cdn.example.test/video/seg-001.ts",
+    ]
+
+
 def test_part_filename_is_truncated_by_utf8_bytes() -> None:
     filename = "[JM434803]" + ("譚雅奉旨生子之事" * 30) + ".pdf"
 
