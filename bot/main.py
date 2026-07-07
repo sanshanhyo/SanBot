@@ -1827,8 +1827,13 @@ def _rewrite_hls_playlist_to_local(
 
     if saved_segments == 0:
         raise JavTrailerError("HLS playlist has no segments", "TRAILER_HLS_EMPTY")
-    if _too_many_hls_segments_missing(seen_segments, skipped_segments):
-        raise JavTrailerError("too many HLS segments are missing", "TRAILER_HLS_SEGMENTS_MISSING")
+    if skipped_segments:
+        logger.warning(
+            "JAV trailer HLS playlist has unavailable segments. saved=%s skipped=%s seen=%s",
+            saved_segments,
+            skipped_segments,
+            seen_segments,
+        )
 
     local_playlist.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     return local_playlist
@@ -1851,14 +1856,6 @@ def _is_hls_segment_tag(line: str) -> bool:
             "#EXT-X-GAP",
         )
     )
-
-
-def _too_many_hls_segments_missing(seen_segments: int, skipped_segments: int) -> bool:
-    if skipped_segments == 0:
-        return False
-    if seen_segments <= 0:
-        return True
-    return skipped_segments >= max(3, math.ceil(seen_segments * 0.3))
 
 
 def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None:
