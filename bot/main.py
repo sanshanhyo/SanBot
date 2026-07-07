@@ -1654,8 +1654,10 @@ def _materialize_hls_playlist_sync(
             except JavTrailerError as exc:
                 if not variant_urls or exc.error_code not in {
                     "TRAILER_HLS_DOWNLOAD_FAILED",
+                    "TRAILER_HLS_ASSET_NOT_FOUND",
                     "TRAILER_HLS_EMPTY",
                     "TRAILER_HLS_INVALID",
+                    "TRAILER_HLS_SEGMENTS_MISSING",
                 }:
                     raise
                 last_error = exc
@@ -1707,6 +1709,9 @@ class _HlsAssetFetcher:
         except self.exceptions.RequestException as exc:
             raise JavTrailerError("HLS request failed", "TRAILER_HLS_DOWNLOAD_FAILED") from exc
 
+        if response.status_code == 404:
+            logger.warning("JAV trailer HLS asset returned HTTP 404.")
+            raise JavTrailerError("HLS asset not found", "TRAILER_HLS_ASSET_NOT_FOUND")
         if response.status_code >= 400:
             logger.warning("JAV trailer HLS request failed with HTTP %s.", response.status_code)
             raise JavTrailerError("HLS request rejected", "TRAILER_HLS_DOWNLOAD_FAILED")
@@ -1731,13 +1736,19 @@ def _rewrite_hls_playlist_to_local(
 
     lines = playlist_text.splitlines()
     rewritten: list[str] = []
-    segment_index = 0
+    pending_segment_tags: list[str] = []
+    seen_segments = 0
+    saved_segments = 0
+    skipped_segments = 0
     key_index = 0
     map_index = 0
     for line in lines:
         stripped = line.strip()
         if not stripped:
-            rewritten.append(line)
+            if pending_segment_tags:
+                pending_segment_tags.append(line)
+            else:
+                rewritten.append(line)
             continue
         if stripped.startswith("#EXT-X-KEY"):
             uri = _extract_hls_uri_attribute(stripped)
@@ -1760,16 +1771,32 @@ def _rewrite_hls_playlist_to_local(
                 rewritten.append(line)
             continue
         if stripped.startswith("#"):
-            rewritten.append(line)
+            if _is_hls_segment_tag(stripped):
+                pending_segment_tags.append(line)
+            else:
+                rewritten.append(line)
             continue
 
-        local_name = f"segment_{segment_index:05d}{_hls_local_extension(stripped, '.ts')}"
-        segment_index += 1
-        _write_hls_asset(_resolve_hls_asset_url(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
+        seen_segments += 1
+        local_name = f"segment_{saved_segments:05d}{_hls_local_extension(stripped, '.ts')}"
+        try:
+            _write_hls_asset(_resolve_hls_asset_url(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
+        except JavTrailerError as exc:
+            if exc.error_code != "TRAILER_HLS_ASSET_NOT_FOUND":
+                raise
+            skipped_segments += 1
+            pending_segment_tags = []
+            logger.warning("Skipping missing JAV trailer HLS segment. skipped=%s seen=%s", skipped_segments, seen_segments)
+            continue
+        rewritten.extend(pending_segment_tags)
+        pending_segment_tags = []
         rewritten.append(local_name)
+        saved_segments += 1
 
-    if segment_index == 0:
+    if saved_segments == 0:
         raise JavTrailerError("HLS playlist has no segments", "TRAILER_HLS_EMPTY")
+    if _too_many_hls_segments_missing(seen_segments, skipped_segments):
+        raise JavTrailerError("too many HLS segments are missing", "TRAILER_HLS_SEGMENTS_MISSING")
 
     local_playlist.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     return local_playlist
@@ -1780,6 +1807,26 @@ def _write_hls_asset(asset_url: str, asset_path: Path, hls_dir: Path, fetcher: _
     if not asset_path.is_relative_to(hls_dir):
         raise JavTrailerError("invalid HLS asset path", "INVALID_TRAILER_PATH")
     asset_path.write_bytes(fetcher.fetch_bytes(asset_url))
+
+
+def _is_hls_segment_tag(line: str) -> bool:
+    return line.startswith(
+        (
+            "#EXTINF",
+            "#EXT-X-BYTERANGE",
+            "#EXT-X-PROGRAM-DATE-TIME",
+            "#EXT-X-DISCONTINUITY",
+            "#EXT-X-GAP",
+        )
+    )
+
+
+def _too_many_hls_segments_missing(seen_segments: int, skipped_segments: int) -> bool:
+    if skipped_segments == 0:
+        return False
+    if seen_segments <= 0:
+        return True
+    return skipped_segments >= max(3, math.ceil(seen_segments * 0.3))
 
 
 def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None:

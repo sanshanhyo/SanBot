@@ -504,6 +504,40 @@ segment_00001.ts
     ]
 
 
+def test_jav_trailer_hls_skips_one_missing_segment(tmp_path: Path) -> None:
+    class FakeFetcher:
+        def fetch_bytes(self, url: str) -> bytes:
+            if "seg-001" in url:
+                raise bot_main.JavTrailerError("missing", "TRAILER_HLS_ASSET_NOT_FOUND")
+            return b"asset"
+
+    playlist = """#EXTM3U
+#EXTINF:1.0,
+seg-000.ts
+#EXTINF:1.0,
+seg-001.ts
+#EXTINF:1.0,
+seg-002.ts
+#EXTINF:1.0,
+seg-003.ts
+#EXT-X-ENDLIST
+"""
+
+    local_playlist = bot_main._rewrite_hls_playlist_to_local(
+        playlist,
+        "https://media.example.test/path/index.m3u8",
+        tmp_path,
+        FakeFetcher(),  # type: ignore[arg-type]
+    )
+
+    content = local_playlist.read_text(encoding="utf-8")
+    assert "segment_00000.ts" in content
+    assert "segment_00001.ts" in content
+    assert "segment_00002.ts" in content
+    assert content.count("#EXTINF") == 3
+    assert len(list(tmp_path.glob("segment_*.ts"))) == 3
+
+
 def test_part_filename_is_truncated_by_utf8_bytes() -> None:
     filename = "[JM434803]" + ("譚雅奉旨生子之事" * 30) + ".pdf"
 
