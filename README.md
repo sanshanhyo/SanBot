@@ -162,6 +162,15 @@ ENABLE_MISSAV_LINK=false
 MISSAV_BASE_URL=https://missav.live
 MISSAV_ALLOWED_GROUP_IDS=
 MISSAV_MAX_GROUP_MEMBERS=150
+ENABLE_TG_MIRROR=false
+TG_API_ID=
+TG_API_HASH=
+TG_SESSION_STRING=
+TG_SESSION_PATH=
+TG_MAX_FILE_BYTES=104857600
+TG_FETCH_LIMIT=5
+TG_SCAN_LIMIT=30
+TG_MEDIA_CACHE_TTL_SECONDS=86400
 MAX_CONCURRENT_JOBS=1
 MAX_ACTIVE_JOBS_PER_GROUP=3
 MAX_ACTIVE_JOBS_PER_USER=1
@@ -267,6 +276,15 @@ DATA_DIR=./data
 | `MISSAV_BASE_URL` | 外部播放入口基础地址，默认 `https://missav.live` |
 | `MISSAV_ALLOWED_GROUP_IDS` | 外部播放入口白名单群号，逗号分隔；未配置时不显示 |
 | `MISSAV_MAX_GROUP_MEMBERS` | 外部播放入口允许的最大群人数，默认 `150`；超过会强制隐藏 |
+| `ENABLE_TG_MIRROR` | 是否启用 Telegram 频道镜像，默认 `false` |
+| `TG_API_ID` | Telegram API ID，可在 Telegram API 管理页创建应用后获得 |
+| `TG_API_HASH` | Telegram API Hash，不要提交到 Git |
+| `TG_SESSION_STRING` | Telethon 用户会话字符串，优先使用；不要提交到 Git |
+| `TG_SESSION_PATH` | Telethon 本地 session 文件路径；未使用 `TG_SESSION_STRING` 时可配置 |
+| `TG_MAX_FILE_BYTES` | 单个 TG 图片/视频最大体积，默认 `104857600`，即 100MB |
+| `TG_FETCH_LIMIT` | `TG最新` 默认拉取数量，默认 `5` |
+| `TG_SCAN_LIMIT` | 每个绑定频道向前扫描的消息数量，默认 `30` |
+| `TG_MEDIA_CACHE_TTL_SECONDS` | TG 下载缓存保留时间，默认 `86400` 秒 |
 | `MAX_CONCURRENT_JOBS` | 同时下载任务数，默认 `1` |
 | `MAX_ACTIVE_JOBS_PER_GROUP` | 每个群允许同时存在的活跃任务数，默认 `3` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 每个用户允许同时存在的活跃任务数，默认 `1` |
@@ -463,6 +481,9 @@ browser:
 @机器人 AV搜索 中文标题
 @机器人 演员搜索 三上悠亚
 @机器人 DB日榜
+@机器人 TG绑定 https://t.me/example_channel
+@机器人 TG列表
+@机器人 TG最新 5
 @机器人 我的任务
 ```
 
@@ -526,6 +547,16 @@ aliases:
 ```
 
 后端也会把成功搜索到的演员名写入 SQLite 缓存，下次同名搜索会优先复用。
+
+Telegram 频道镜像默认关闭，需要先配置 `ENABLE_TG_MIRROR=true`、`TG_API_ID`、`TG_API_HASH` 和一个已登录的 Telethon session。启用后，群管理员或机器人管理者可以绑定频道并手动拉取最近图片/视频：
+
+```text
+@机器人 TG绑定 https://t.me/example_channel
+@机器人 TG列表
+@机器人 TG最新 5
+```
+
+第一版只做手动拉取，不做定时自动同步。后端会记录已转发的 `channel_id + message_id`，避免重复转发；单个媒体超过 `TG_MAX_FILE_BYTES` 会跳过。请只绑定你有权访问和转发内容的频道。
 
 输入了无法识别的内容时，机器人会回复：
 

@@ -32,9 +32,15 @@ from .models import (
     JobCreate,
     JobCreateResponse,
     JobResponse,
+    TelegramChannelBindRequest,
+    TelegramChannelListResponse,
+    TelegramChannelResponse,
+    TelegramFetchRequest,
+    TelegramFetchResponse,
 )
 from .javlibrary_service import JavLibraryService, JavLibraryServiceConfig, JavLibraryServiceError
 from .task_manager import ActiveJobLimitError, DuplicateJobError, JobManager, JobManagerConfig
+from .tg_mirror import TelegramMirrorConfig, TelegramMirrorError, TelegramMirrorService
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +144,15 @@ class BackendSettings:
     jav_actor_alias_online: bool
     jav_actor_alias_timeout_seconds: float
     jav_actor_alias_candidate_limit: int
+    enable_tg_mirror: bool
+    tg_api_id: int | None
+    tg_api_hash: str | None
+    tg_session_string: str | None
+    tg_session_path: Path | None
+    tg_max_file_bytes: int
+    tg_fetch_limit: int
+    tg_scan_limit: int
+    tg_media_cache_ttl_seconds: int
     max_active_jobs_per_group: int
     max_active_jobs_per_user: int
     max_album_pages: int
@@ -195,6 +210,17 @@ class BackendSettings:
             jav_actor_alias_online=_env_bool("JAV_ACTOR_ALIAS_ONLINE", True),
             jav_actor_alias_timeout_seconds=max(0.5, _env_float("JAV_ACTOR_ALIAS_TIMEOUT_SECONDS", 4.0)),
             jav_actor_alias_candidate_limit=max(1, min(12, _env_int("JAV_ACTOR_ALIAS_CANDIDATE_LIMIT", 6))),
+            enable_tg_mirror=_env_bool("ENABLE_TG_MIRROR", False),
+            tg_api_id=_env_int("TG_API_ID", 0) or None,
+            tg_api_hash=os.getenv("TG_API_HASH") or None,
+            tg_session_string=os.getenv("TG_SESSION_STRING") or None,
+            tg_session_path=Path(os.getenv("TG_SESSION_PATH", "./data/telegram.session"))
+            if os.getenv("TG_SESSION_PATH")
+            else None,
+            tg_max_file_bytes=max(1 * 1024 * 1024, _env_int("TG_MAX_FILE_BYTES", 100 * 1024 * 1024)),
+            tg_fetch_limit=max(1, min(10, _env_int("TG_FETCH_LIMIT", 5))),
+            tg_scan_limit=max(1, min(100, _env_int("TG_SCAN_LIMIT", 30))),
+            tg_media_cache_ttl_seconds=max(0, _env_int("TG_MEDIA_CACHE_TTL_SECONDS", 86400)),
             max_active_jobs_per_group=max(0, _env_int("MAX_ACTIVE_JOBS_PER_GROUP", 3)),
             max_active_jobs_per_user=max(0, _env_int("MAX_ACTIVE_JOBS_PER_USER", 1)),
             max_album_pages=max(0, _env_int("MAX_ALBUM_PAGES", 300)),
@@ -264,10 +290,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     javlibrary_service.initialize()
     app.state.javlibrary_service = javlibrary_service
+    tg_mirror_service = TelegramMirrorService(
+        TelegramMirrorConfig(
+            data_dir=settings.data_dir,
+            enabled=settings.enable_tg_mirror,
+            api_id=settings.tg_api_id,
+            api_hash=settings.tg_api_hash,
+            session_string=settings.tg_session_string,
+            session_path=settings.tg_session_path,
+            max_file_bytes=settings.tg_max_file_bytes,
+            default_fetch_limit=settings.tg_fetch_limit,
+            max_fetch_limit=10,
+            scan_limit=settings.tg_scan_limit,
+            media_cache_ttl_seconds=settings.tg_media_cache_ttl_seconds,
+        )
+    )
+    tg_mirror_service.initialize()
+    app.state.tg_mirror_service = tg_mirror_service
     await manager.start()
     try:
         yield
     finally:
+        await tg_mirror_service.close()
         await manager.stop()
 
 
@@ -284,6 +328,10 @@ def _javlibrary_service(request: Request) -> JavLibraryService:
 
 def _audit_log(request: Request) -> AuditLog:
     return request.app.state.audit_log
+
+
+def _tg_mirror_service(request: Request) -> TelegramMirrorService:
+    return request.app.state.tg_mirror_service
 
 
 def _require_api_token(request: Request, authorization: str | None) -> None:
@@ -584,6 +632,59 @@ async def get_javdb_ranking(
             detail={"message": exc.user_message, "error_code": exc.error_code},
         ) from exc
     return JavRankingResponse(**result)
+
+
+@app.post("/api/tg/channels", response_model=TelegramChannelResponse)
+async def bind_tg_channel(
+    payload: TelegramChannelBindRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> TelegramChannelResponse:
+    _require_api_token(request, authorization)
+    try:
+        channel = await _tg_mirror_service(request).bind_channel(payload.group_id, payload.channel_ref)
+    except TelegramMirrorError as exc:
+        raise _tg_http_exception(exc) from exc
+    return TelegramChannelResponse(**channel)
+
+
+@app.get("/api/tg/channels", response_model=TelegramChannelListResponse)
+async def list_tg_channels(
+    request: Request,
+    group_id: str = Query(pattern=r"^\d+$"),
+    authorization: str | None = Header(default=None),
+) -> TelegramChannelListResponse:
+    _require_api_token(request, authorization)
+    channels = await asyncio.to_thread(_tg_mirror_service(request).list_channels, group_id)
+    return TelegramChannelListResponse(channels=[TelegramChannelResponse(**channel) for channel in channels])
+
+
+@app.post("/api/tg/fetch-latest", response_model=TelegramFetchResponse)
+async def fetch_latest_tg_media(
+    payload: TelegramFetchRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> TelegramFetchResponse:
+    _require_api_token(request, authorization)
+    try:
+        result = await _tg_mirror_service(request).fetch_latest(payload.group_id, payload.limit)
+    except TelegramMirrorError as exc:
+        raise _tg_http_exception(exc) from exc
+    return TelegramFetchResponse(**result)
+
+
+def _tg_http_exception(exc: TelegramMirrorError) -> HTTPException:
+    status_code = status.HTTP_502_BAD_GATEWAY
+    if exc.error_code == "TG_DISABLED":
+        status_code = status.HTTP_403_FORBIDDEN
+    elif exc.error_code in {"TG_NOT_CONFIGURED", "TG_SESSION_NOT_CONFIGURED", "TG_SESSION_UNAUTHORIZED"}:
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif exc.error_code == "TG_CHANNEL_REF_INVALID":
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    return HTTPException(
+        status_code=status_code,
+        detail={"message": exc.user_message, "error_code": exc.error_code},
+    )
 
 
 async def _run_preview_worker(

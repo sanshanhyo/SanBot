@@ -146,3 +146,48 @@ class JavVideoResponse(BaseModel):
     preview_image_urls: list[str] = Field(default_factory=list)
     resource_page_url: str | None = None
     cache_hit: bool = False
+
+
+class TelegramChannelBindRequest(BaseModel):
+    group_id: str = Field(pattern=r"^\d+$")
+    channel_ref: str = Field(min_length=1, max_length=160)
+
+
+class TelegramChannelResponse(BaseModel):
+    id: int
+    group_id: str
+    channel_ref: str
+    channel_id: str
+    channel_title: str
+    enabled: bool = True
+    created_at: str
+    updated_at: str
+
+
+class TelegramChannelListResponse(BaseModel):
+    channels: list[TelegramChannelResponse] = Field(default_factory=list)
+
+
+class TelegramFetchRequest(BaseModel):
+    group_id: str = Field(pattern=r"^\d+$")
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class TelegramMediaItem(BaseModel):
+    id: int
+    channel_id: str
+    channel_title: str
+    message_id: int
+    media_type: str = Field(pattern=r"^(image|video)$")
+    file_path: str
+    filename: str
+    file_size: int = Field(ge=0)
+    caption: str | None = None
+    message_url: str | None = None
+    created_at: str | None = None
+
+
+class TelegramFetchResponse(BaseModel):
+    items: list[TelegramMediaItem] = Field(default_factory=list)
+    channels: list[TelegramChannelResponse] = Field(default_factory=list)
+    skipped: int = 0

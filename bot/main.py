@@ -603,13 +603,15 @@ async def handle_group_message(
         return
 
     logger.info(
-        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s db_ranking_period=%s jav_code=%s group_id=%s user_id=%s",
+        "Parsed group command action=%s album_id=%s search_query=%s ranking_period=%s db_ranking_period=%s jav_code=%s tg_ref=%s tg_limit=%s group_id=%s user_id=%s",
         parse_result.action,
         parse_result.album_id,
         parse_result.search_query,
         parse_result.ranking_period,
         parse_result.db_ranking_period,
         parse_result.jav_code,
+        parse_result.tg_channel_ref,
+        parse_result.tg_limit,
         group_id,
         user_id,
     )
@@ -657,6 +659,18 @@ async def handle_group_message(
             await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
             return
         await _send_group_history(group_id, napcat, backend)
+        return
+
+    if parse_result.action in {ParseAction.TG_BIND, ParseAction.TG_LIST, ParseAction.TG_LATEST}:
+        if not _can_run_admin_command(event, user_id, settings):
+            await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
+            return
+        if parse_result.action == ParseAction.TG_BIND:
+            await _handle_tg_bind_command(parse_result.tg_channel_ref or "", group_id, napcat, backend)
+        elif parse_result.action == ParseAction.TG_LIST:
+            await _handle_tg_list_command(group_id, napcat, backend)
+        else:
+            await _handle_tg_latest_command(parse_result.tg_limit or 5, group_id, napcat, backend)
         return
 
     if parse_result.action in {
@@ -979,6 +993,138 @@ async def _run_admin_cancel(
             status=_status_label(str(job.get("status") or "")),
         ),
     )
+
+
+async def _handle_tg_bind_command(
+    channel_ref: str,
+    group_id: str,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    try:
+        channel = await backend.bind_tg_channel(group_id, channel_ref)
+    except BackendError as exc:
+        logger.exception("Could not bind Telegram channel %s.", channel_ref)
+        await _safe_send(napcat, group_id, lang_text("tg_bind_failed", error=exc, error_code=exc.error_code))
+        return
+    await _safe_send(
+        napcat,
+        group_id,
+        lang_text(
+            "tg_bind_done",
+            title=channel.get("channel_title") or channel_ref,
+            ref=channel.get("channel_ref") or channel_ref,
+        ),
+    )
+
+
+async def _handle_tg_list_command(group_id: str, napcat: NapCatClient, backend: BackendClient) -> None:
+    try:
+        payload = await backend.list_tg_channels(group_id)
+    except BackendError as exc:
+        logger.exception("Could not list Telegram channels.")
+        await _safe_send(napcat, group_id, lang_text("tg_list_failed", error=exc, error_code=exc.error_code))
+        return
+    channels = payload.get("channels") if isinstance(payload, dict) else []
+    safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
+    await _safe_send(napcat, group_id, _format_tg_channel_list(safe_channels))
+
+
+async def _handle_tg_latest_command(
+    limit: int,
+    group_id: str,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    await _safe_send(napcat, group_id, lang_text("tg_fetching", limit=limit))
+    try:
+        payload = await backend.fetch_tg_latest(group_id, limit)
+    except BackendError as exc:
+        logger.exception("Could not fetch Telegram media.")
+        await _safe_send(napcat, group_id, lang_text("tg_fetch_failed", error=exc, error_code=exc.error_code))
+        return
+
+    channels = payload.get("channels") if isinstance(payload, dict) else []
+    items = payload.get("items") if isinstance(payload, dict) else []
+    safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
+    safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    if not safe_channels:
+        await _safe_send(napcat, group_id, lang_text("tg_no_channels"))
+        return
+    if not safe_items:
+        await _safe_send(napcat, group_id, lang_text("tg_no_new_media"))
+        return
+
+    sent = 0
+    failed = 0
+    for item in safe_items:
+        try:
+            await _send_tg_media_item(group_id, item, napcat)
+            sent += 1
+        except NapCatAPIError:
+            failed += 1
+            logger.exception("Could not forward Telegram media item id=%s.", item.get("id"))
+        except OSError:
+            failed += 1
+            logger.exception("Telegram media file is not readable: %s", item.get("file_path"))
+    await _safe_send(napcat, group_id, lang_text("tg_fetch_done", sent=sent, failed=failed))
+
+
+def _format_tg_channel_list(channels: list[dict[str, Any]]) -> str:
+    if not channels:
+        return lang_text("tg_list_empty")
+    lines = [lang_text("tg_list_header")]
+    for index, channel in enumerate(channels, start=1):
+        lines.append(
+            lang_text(
+                "tg_list_line",
+                index=index,
+                title=channel.get("channel_title") or channel.get("channel_ref") or lang_text("unknown"),
+                ref=channel.get("channel_ref") or lang_text("unknown"),
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _send_tg_media_item(group_id: str, item: dict[str, Any], napcat: NapCatClient) -> None:
+    file_path = Path(str(item.get("file_path") or "")).resolve()
+    if not file_path.is_file():
+        raise OSError(f"Telegram media file missing: {file_path}")
+    await _safe_send(napcat, group_id, _format_tg_media_caption(item))
+    media_type = str(item.get("media_type") or "")
+    if media_type == "image":
+        await napcat.send_group_image(group_id, str(file_path))
+        return
+    if media_type == "video":
+        try:
+            await napcat.send_group_video(group_id, str(file_path))
+        except NapCatAPIError:
+            filename = str(item.get("filename") or file_path.name)
+            await napcat.upload_group_file(group_id, file_path, filename)
+        return
+    raise NapCatAPIError(f"unsupported Telegram media type: {media_type}")
+
+
+def _format_tg_media_caption(item: dict[str, Any]) -> str:
+    caption = str(item.get("caption") or "").strip()
+    if len(caption) > 160:
+        caption = caption[:157] + "..."
+    return lang_text(
+        "tg_media_caption",
+        title=item.get("channel_title") or lang_text("unknown"),
+        media_type=_tg_media_type_label(str(item.get("media_type") or "")),
+        size=_format_bytes(int(item.get("file_size") or 0)),
+        caption=lang_text("tg_caption_suffix", caption=caption) if caption else "",
+        url=lang_text("tg_url_suffix", url=item.get("message_url")) if item.get("message_url") else "",
+    )
+
+
+def _tg_media_type_label(media_type: str) -> str:
+    if media_type == "image":
+        return lang_text("tg_media_image")
+    if media_type == "video":
+        return lang_text("tg_media_video")
+    return lang_text("unknown")
 
 
 def _command_cooldown_remaining(
@@ -2843,6 +2989,9 @@ def _audit_command_label(command: str) -> str:
         "actor_search": "audit_command_actor_search",
         "db_ranking": "audit_command_db_ranking",
         "jav": "audit_command_jav",
+        "tg_bind": "audit_command_tg_bind",
+        "tg_list": "audit_command_tg_list",
+        "tg_latest": "audit_command_tg_latest",
         "unknown_command": "audit_command_unknown",
         "error": "audit_command_error",
     }
@@ -2879,6 +3028,10 @@ def _audit_target(parse_result: object) -> str | None:
         return parse_result.db_ranking_period
     if action == ParseAction.JAV:
         return parse_result.jav_code
+    if action == ParseAction.TG_BIND:
+        return parse_result.tg_channel_ref
+    if action == ParseAction.TG_LATEST:
+        return f"limit={parse_result.tg_limit or 5}"
     if action == ParseAction.ERROR:
         return parse_result.error_key
     return None

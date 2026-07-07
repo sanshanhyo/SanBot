@@ -343,6 +343,59 @@ class BackendClient:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
+    async def bind_tg_channel(self, group_id: str, channel_ref: str) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/tg/channels",
+                json={"group_id": str(group_id), "channel_ref": channel_ref},
+                headers=self._headers(),
+                timeout=60.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "Telegram 频道绑定失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "TG_BIND_FAILED")
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
+    async def list_tg_channels(self, group_id: str) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                "/api/tg/channels",
+                params={"group_id": str(group_id)},
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "Telegram 频道列表获取失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "TG_LIST_FAILED")
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
+    async def fetch_tg_latest(self, group_id: str, limit: int = 5) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/tg/fetch-latest",
+                json={"group_id": str(group_id), "limit": int(limit)},
+                headers=self._headers(),
+                timeout=300.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "Telegram 媒体拉取失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "TG_FETCH_FAILED")
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
     async def download_file(self, job_id: str, dest_path: str | Path) -> Path:
         dest = Path(dest_path)
         dest.parent.mkdir(parents=True, exist_ok=True)

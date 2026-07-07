@@ -61,6 +61,21 @@ class FakeCreateBackend:
         self.db_rankings: list[tuple[str, int, int]] = []
         self.jav_queries: list[str] = []
         self.jav_force_refreshes: list[bool] = []
+        self.tg_bound_refs: list[tuple[str, str]] = []
+        self.tg_fetches: list[tuple[str, int]] = []
+        self.tg_channels: list[dict] = [
+            {
+                "id": 1,
+                "group_id": "10001",
+                "channel_ref": "example_channel",
+                "channel_id": "-100123456",
+                "channel_title": "Example Channel",
+                "enabled": True,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+        self.tg_items: list[dict] = []
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -207,6 +222,20 @@ class FakeCreateBackend:
             "preview_image_urls": ["https://javdb.com/samples/1.jpg", "https://javdb.com/samples/2.jpg"],
             "resource_page_url": "https://javdb.com/v/abc123",
         }
+
+    async def bind_tg_channel(self, group_id: str, channel_ref: str) -> dict:
+        self.tg_bound_refs.append((group_id, channel_ref))
+        channel = dict(self.tg_channels[0])
+        channel["group_id"] = group_id
+        channel["channel_ref"] = channel_ref.replace("https://t.me/", "")
+        return channel
+
+    async def list_tg_channels(self, group_id: str) -> dict:
+        return {"channels": self.tg_channels}
+
+    async def fetch_tg_latest(self, group_id: str, limit: int = 5) -> dict:
+        self.tg_fetches.append((group_id, limit))
+        return {"channels": self.tg_channels, "items": self.tg_items, "skipped": 0}
 
     async def create_job(
         self,
@@ -744,6 +773,111 @@ async def test_group_admin_can_query_group_history(tmp_path: Path) -> None:
     assert "本群最近任务" in napcat.sent[-1][1]
     assert "JM333333 已完成" in napcat.sent[-1][1]
     assert "用户：20002" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_member_cannot_bind_tg_channel(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG绑定 https://t.me/example_channel"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent[-1] == ("10001", "这个命令需要群主、群管理员或机器人管理者执行。")
+    assert backend.tg_bound_refs == []
+
+
+@pytest.mark.asyncio
+async def test_group_admin_can_bind_and_list_tg_channels(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    state = BotState()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG绑定 https://t.me/example_channel"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG列表"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.tg_bound_refs == [("10001", "https://t.me/example_channel")]
+    assert "TG 频道已绑定" in napcat.sent[-2][1]
+    assert "Example Channel" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_group_admin_can_fetch_latest_tg_media(tmp_path: Path) -> None:
+    media_path = tmp_path / "tg.jpg"
+    media_path.write_bytes(b"fake image")
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.tg_items = [
+        {
+            "id": 7,
+            "channel_id": "-100123456",
+            "channel_title": "Example Channel",
+            "message_id": 42,
+            "media_type": "image",
+            "file_path": str(media_path),
+            "filename": "tg.jpg",
+            "file_size": media_path.stat().st_size,
+            "caption": "hello",
+            "message_url": "https://t.me/example_channel/42",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG最新 1"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.tg_fetches == [("10001", 1)]
+    assert any("来自 TG：Example Channel" in message for _group, message in napcat.sent)
+    assert ("10001", f"IMAGE:{media_path.resolve()}") in napcat.sent
 
 
 @pytest.mark.asyncio

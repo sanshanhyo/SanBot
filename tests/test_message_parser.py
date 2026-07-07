@@ -321,6 +321,35 @@ def test_parse_jav_command_with_at() -> None:
     assert result.jav_code == "SSIS123"
 
 
+def test_parse_tg_bind_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] TG绑定 https://t.me/example_channel"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.TG_BIND
+    assert result.tg_channel_ref == "https://t.me/example_channel"
+
+
+def test_parse_tg_list_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] TG列表"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.TG_LIST
+
+
+def test_parse_tg_latest_command_with_at() -> None:
+    result = parse_group_message(
+        _event("[CQ:at,qq=12345] TG最新 5"),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.TG_LATEST
+    assert result.tg_limit == 5
+
+
 def test_parse_fc2_jav_command_with_at() -> None:
     result = parse_group_message(
         _event("[CQ:at,qq=12345] 番号 FC2 PPV 1234567"),

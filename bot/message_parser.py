@@ -25,6 +25,8 @@ DB_RANKING_ALIASES = {
     "DB周榜": "week",
     "DB月榜": "month",
 }
+TG_BIND_PATTERN = re.compile(r"(?i)^\s*TG\s*(?:绑定|bind)\s+(\S+)\s*$")
+TG_LATEST_PATTERN = re.compile(r"(?i)^\s*TG\s*(?:最新|拉取|同步)(?:\s+(\d{1,2}))?\s*$")
 CQ_CODE_PATTERN = re.compile(r"\[CQ:([a-zA-Z0-9_]+)((?:,[^\]]*)?)\]")
 
 
@@ -43,6 +45,9 @@ class ParseAction(StrEnum):
     ACTOR_SEARCH = "actor_search"
     DB_RANKING = "db_ranking"
     JAV = "jav"
+    TG_BIND = "tg_bind"
+    TG_LIST = "tg_list"
+    TG_LATEST = "tg_latest"
     UNKNOWN = "unknown_command"
     ERROR = "error"
 
@@ -55,6 +60,8 @@ class ParseResult:
     ranking_period: str | None = None
     db_ranking_period: str | None = None
     jav_code: str | None = None
+    tg_channel_ref: str | None = None
+    tg_limit: int | None = None
     error_key: str | None = None
 
 
@@ -194,6 +201,35 @@ def extract_jav_code(message_segments: Any) -> str | None:
     return re.sub(r"\s+", "", match.group(1)).strip().upper()
 
 
+def extract_tg_bind_ref(message_segments: Any) -> tuple[str | None, str | None]:
+    text = text_from_segments(message_segments)
+    match = TG_BIND_PATTERN.match(text)
+    if match is None:
+        if re.match(r"(?i)^\s*TG\s*(?:绑定|bind)\s*$", text):
+            return None, "tg_bind_usage"
+        return None, None
+    return match.group(1).strip(), None
+
+
+def extract_tg_latest_limit(message_segments: Any) -> tuple[int | None, str | None]:
+    text = text_from_segments(message_segments)
+    match = TG_LATEST_PATTERN.match(text)
+    if match is None:
+        return None, None
+    raw_limit = match.group(1)
+    if raw_limit is None:
+        return 5, None
+    limit = int(raw_limit)
+    if limit < 1 or limit > 10:
+        return None, "tg_latest_usage"
+    return limit, None
+
+
+def is_tg_list_command(message_segments: Any) -> bool:
+    text = re.sub(r"\s+", "", text_from_segments(message_segments)).strip()
+    return text.upper() in {"TG列表", "TG频道", "TG订阅", "TGCHANNELS"}
+
+
 def extract_control_action(message_segments: Any) -> ParseAction | None:
     text = re.sub(r"\s+", " ", text_from_segments(message_segments)).strip()
     if not text:
@@ -239,6 +275,21 @@ def parse_group_message(event: dict[str, Any], bot_qq_id: str) -> ParseResult:
         return ParseResult(ParseAction.ERROR, error_key=av_search_error)
     if av_search_query is not None:
         return ParseResult(ParseAction.AV_SEARCH, search_query=av_search_query)
+
+    tg_ref, tg_bind_error = extract_tg_bind_ref(message_segments)
+    if tg_bind_error:
+        return ParseResult(ParseAction.ERROR, error_key=tg_bind_error)
+    if tg_ref is not None:
+        return ParseResult(ParseAction.TG_BIND, tg_channel_ref=tg_ref)
+
+    if is_tg_list_command(message_segments):
+        return ParseResult(ParseAction.TG_LIST)
+
+    tg_limit, tg_latest_error = extract_tg_latest_limit(message_segments)
+    if tg_latest_error:
+        return ParseResult(ParseAction.ERROR, error_key=tg_latest_error)
+    if tg_limit is not None:
+        return ParseResult(ParseAction.TG_LATEST, tg_limit=tg_limit)
 
     ranking_period = extract_jm_ranking_period(message_segments)
     if ranking_period is not None:
