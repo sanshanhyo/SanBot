@@ -41,6 +41,8 @@ DEFAULT_SEARCH_RESULT_LIMIT = 5
 DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
 DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
+DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS = 180
+DEFAULT_JAV_TRAILER_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_JAV_STILLS_MAX_COUNT = 3
 DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 0
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
@@ -65,6 +67,12 @@ class UploadCancelledError(Exception):
 
 class JavStillsPdfError(Exception):
     pass
+
+
+class JavTrailerError(Exception):
+    def __init__(self, message: str, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 @dataclass(frozen=True)
@@ -138,6 +146,9 @@ class BotSettings:
     jav_action_timeout_seconds: int = DEFAULT_JAV_ACTION_TIMEOUT_SECONDS
     enable_jav_resource_page: bool = True
     enable_jav_trailer: bool = True
+    jav_trailer_ffmpeg_path: str = "ffmpeg"
+    jav_trailer_convert_timeout_seconds: int = DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS
+    jav_trailer_max_bytes: int = DEFAULT_JAV_TRAILER_MAX_BYTES
     enable_jav_stills: bool = False
     jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
     jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
@@ -202,6 +213,15 @@ class BotSettings:
             jav_action_timeout_seconds=max(30, _env_int("JAV_ACTION_TIMEOUT_SECONDS", DEFAULT_JAV_ACTION_TIMEOUT_SECONDS)),
             enable_jav_resource_page=_env_bool("ENABLE_JAV_RESOURCE_PAGE", True),
             enable_jav_trailer=_env_bool("ENABLE_JAV_TRAILER", True),
+            jav_trailer_ffmpeg_path=os.getenv("JAV_TRAILER_FFMPEG_PATH") or "ffmpeg",
+            jav_trailer_convert_timeout_seconds=max(
+                10,
+                _env_int("JAV_TRAILER_CONVERT_TIMEOUT_SECONDS", DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS),
+            ),
+            jav_trailer_max_bytes=max(
+                1 * 1024 * 1024,
+                _env_int("JAV_TRAILER_MAX_BYTES", DEFAULT_JAV_TRAILER_MAX_BYTES),
+            ),
             enable_jav_stills=_env_bool("ENABLE_JAV_STILLS", False),
             jav_stills_max_count=max(1, min(6, _env_int("JAV_STILLS_MAX_COUNT", DEFAULT_JAV_STILLS_MAX_COUNT))),
             jav_stills_max_group_members=max(
@@ -1345,7 +1365,7 @@ async def _handle_pending_jav_action(
     if action == "resource":
         await _send_jav_resource_page(pending.payload, group_id, napcat)
     elif action == "trailer":
-        await _send_jav_trailer(pending.payload, group_id, napcat)
+        await _send_jav_trailer(pending.payload, group_id, settings, napcat)
     elif action == "stills":
         await _send_jav_stills(pending.payload, group_id, settings, napcat)
     elif action == "stream":
@@ -1414,14 +1434,22 @@ async def _send_jav_resource_page(payload: dict[str, Any], group_id: str, napcat
     await _safe_send(napcat, group_id, lang_text("jav_resource_page", url=url))
 
 
-async def _send_jav_trailer(payload: dict[str, Any], group_id: str, napcat: NapCatClient) -> None:
+async def _send_jav_trailer(
+    payload: dict[str, Any],
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> None:
     trailer_url = _payload_str(payload, "trailer_url")
     if trailer_url:
+        if _jav_trailer_needs_local_mp4(trailer_url):
+            await _send_jav_trailer_as_local_mp4(payload, trailer_url, group_id, settings, napcat)
+            return
         try:
             await napcat.send_group_video(group_id, trailer_url)
         except NapCatAPIError:
-            logger.warning("Could not send JAV trailer as video; falling back to link.", exc_info=True)
-            await _safe_send(napcat, group_id, lang_text("jav_trailer_link", url=trailer_url))
+            logger.warning("Could not send JAV trailer URL directly; trying local MP4.", exc_info=True)
+            await _send_jav_trailer_as_local_mp4(payload, trailer_url, group_id, settings, napcat)
         return
 
     trailer_page_url = _payload_str(payload, "trailer_page_url")
@@ -1434,6 +1462,228 @@ async def _send_jav_trailer(payload: dict[str, Any], group_id: str, napcat: NapC
         return
 
     await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+
+
+async def _send_jav_trailer_as_local_mp4(
+    payload: dict[str, Any],
+    trailer_url: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> None:
+    code = _jav_payload_code(payload)
+    job_id = f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', code).strip('._') or 'JAV'}-{uuid.uuid4().hex[:8]}"
+    cache_root = (settings.data_dir.resolve() / "jav_trailers").resolve()
+    dest_dir = (cache_root / job_id).resolve()
+    if not dest_dir.is_relative_to(cache_root):
+        logger.warning("Skip JAV trailer outside cache dir: %s", dest_dir)
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code="INVALID_CACHE_PATH"))
+        return
+
+    await _safe_send(napcat, group_id, lang_text("jav_trailer_preparing_mp4"))
+    try:
+        mp4_path = await _prepare_jav_trailer_mp4(payload, trailer_url, dest_dir, settings)
+        await napcat.send_group_video(group_id, str(mp4_path.resolve()))
+    except NapCatAPIError:
+        logger.exception("Could not send JAV trailer MP4 for %s.", code)
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code="NAPCAT_VIDEO_UPLOAD_FAILED"))
+    except JavTrailerError as exc:
+        logger.exception("Could not prepare JAV trailer MP4 for %s.", code)
+        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code=exc.error_code))
+    finally:
+        await asyncio.to_thread(_cleanup_bot_download_dir, dest_dir, cache_root)
+
+
+async def _prepare_jav_trailer_mp4(
+    payload: dict[str, Any],
+    trailer_url: str,
+    dest_dir: Path,
+    settings: BotSettings,
+) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    mp4_path = (dest_dir / _jav_trailer_filename(payload)).resolve()
+    if not mp4_path.is_relative_to(dest_dir):
+        raise JavTrailerError("invalid trailer path", "INVALID_TRAILER_PATH")
+
+    if _looks_like_mp4_url(trailer_url):
+        await _download_jav_trailer_mp4(trailer_url, mp4_path, payload, settings)
+    else:
+        await _convert_jav_trailer_to_mp4(trailer_url, mp4_path, payload, settings)
+
+    if not mp4_path.is_file() or mp4_path.stat().st_size <= 0:
+        raise JavTrailerError("empty trailer mp4", "TRAILER_MP4_EMPTY")
+    if mp4_path.stat().st_size > settings.jav_trailer_max_bytes:
+        raise JavTrailerError("trailer mp4 is too large", "TRAILER_MP4_TOO_LARGE")
+    return mp4_path
+
+
+async def _download_jav_trailer_mp4(
+    trailer_url: str,
+    mp4_path: Path,
+    payload: dict[str, Any],
+    settings: BotSettings,
+) -> None:
+    tmp_path = mp4_path.with_name(f"{mp4_path.name}.tmp")
+    tmp_path.unlink(missing_ok=True)
+    headers = _jav_trailer_request_headers(payload)
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            headers=headers,
+            timeout=httpx.Timeout(settings.jav_trailer_convert_timeout_seconds),
+        ) as client:
+            async with client.stream("GET", trailer_url) as response:
+                response.raise_for_status()
+                size = 0
+                with tmp_path.open("wb") as file:
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        if size > settings.jav_trailer_max_bytes:
+                            raise JavTrailerError("trailer mp4 is too large", "TRAILER_MP4_TOO_LARGE")
+                        file.write(chunk)
+        if tmp_path.stat().st_size <= 0:
+            raise JavTrailerError("empty trailer download", "TRAILER_MP4_EMPTY")
+        tmp_path.replace(mp4_path)
+    except JavTrailerError:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except httpx.TimeoutException as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise JavTrailerError("trailer mp4 download timed out", "TRAILER_MP4_TIMEOUT") from exc
+    except httpx.HTTPError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise JavTrailerError("trailer mp4 download failed", "TRAILER_MP4_DOWNLOAD_FAILED") from exc
+
+
+async def _convert_jav_trailer_to_mp4(
+    trailer_url: str,
+    mp4_path: Path,
+    payload: dict[str, Any],
+    settings: BotSettings,
+) -> None:
+    tmp_path = mp4_path.with_name(f"{mp4_path.name}.tmp.mp4")
+    tmp_path.unlink(missing_ok=True)
+    headers = _ffmpeg_headers_arg(_jav_trailer_request_headers(payload))
+    copy_command = _ffmpeg_trailer_command(
+        settings.jav_trailer_ffmpeg_path,
+        trailer_url,
+        tmp_path,
+        headers,
+        transcode=False,
+    )
+    try:
+        await _run_ffmpeg(copy_command, settings.jav_trailer_convert_timeout_seconds)
+    except JavTrailerError:
+        logger.info("Trailer remux failed; retrying with transcode.", exc_info=True)
+        tmp_path.unlink(missing_ok=True)
+        transcode_command = _ffmpeg_trailer_command(
+            settings.jav_trailer_ffmpeg_path,
+            trailer_url,
+            tmp_path,
+            headers,
+            transcode=True,
+        )
+        await _run_ffmpeg(transcode_command, settings.jav_trailer_convert_timeout_seconds)
+
+    if not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
+        tmp_path.unlink(missing_ok=True)
+        raise JavTrailerError("ffmpeg did not produce mp4", "TRAILER_MP4_EMPTY")
+    tmp_path.replace(mp4_path)
+
+
+def _ffmpeg_trailer_command(
+    ffmpeg_path: str,
+    trailer_url: str,
+    output_path: Path,
+    headers: str,
+    *,
+    transcode: bool,
+) -> list[str]:
+    command = [ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error"]
+    if headers:
+        command.extend(["-headers", headers])
+    command.extend(
+        [
+            "-protocol_whitelist",
+            "file,http,https,tcp,tls,crypto",
+            "-allowed_extensions",
+            "ALL",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "5",
+            "-i",
+            trailer_url,
+            "-map",
+            "0:v:0?",
+            "-map",
+            "0:a:0?",
+        ]
+    )
+    if transcode:
+        command.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k"])
+    else:
+        command.extend(["-c", "copy"])
+    command.extend(["-movflags", "+faststart", str(output_path)])
+    return command
+
+
+async def _run_ffmpeg(command: list[str], timeout_seconds: int) -> None:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise JavTrailerError("ffmpeg is not installed", "FFMPEG_NOT_FOUND") from exc
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.communicate()
+        raise JavTrailerError("ffmpeg timed out", "TRAILER_MP4_TIMEOUT") from exc
+
+    if process.returncode != 0:
+        message = (stderr or stdout).decode("utf-8", errors="replace")[-500:]
+        logger.warning("ffmpeg failed: %s", message)
+        raise JavTrailerError("ffmpeg failed", "FFMPEG_CONVERT_FAILED")
+
+
+def _ffmpeg_headers_arg(headers: dict[str, str]) -> str:
+    return "".join(f"{key}: {value}\r\n" for key, value in headers.items() if value)
+
+
+def _jav_trailer_request_headers(payload: dict[str, Any]) -> dict[str, str]:
+    referer = _jav_resource_page_url(payload) or _payload_str(payload, "url") or "https://javdb.com/"
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "video/webm,video/mp4,video/*,*/*;q=0.8",
+        "Referer": referer,
+    }
+
+
+def _jav_trailer_needs_local_mp4(trailer_url: str) -> bool:
+    clean_path = urlsplit(trailer_url).path.lower()
+    return clean_path.endswith(".m3u8") or not clean_path.endswith(".mp4")
+
+
+def _looks_like_mp4_url(trailer_url: str) -> bool:
+    return urlsplit(trailer_url).path.lower().endswith(".mp4")
+
+
+def _jav_trailer_filename(payload: dict[str, Any]) -> str:
+    code = _jav_payload_code(payload)
+    return _safe_filename(f"[{code}] 预告片.mp4", f"[{code}] trailer.mp4", max_bytes=MAX_UPLOAD_FILENAME_BYTES)
 
 
 async def _send_jav_stills(

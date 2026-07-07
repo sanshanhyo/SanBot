@@ -687,6 +687,57 @@ async def test_jav_trailer_action_sends_video(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_jav_trailer_action_converts_m3u8_to_local_mp4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.trailer_url = "https://javdb.com/trailers/SSIS-123.m3u8"
+    state = BotState()
+
+    async def fake_prepare_jav_trailer_mp4(
+        payload: dict,
+        trailer_url: str,
+        dest_dir: Path,
+        settings: BotSettings,
+    ) -> Path:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        mp4_path = dest_dir / "[SSIS-123] 预告片.mp4"
+        mp4_path.write_bytes(b"fake mp4")
+        return mp4_path
+
+    monkeypatch.setattr(bot_main, "_prepare_jav_trailer_mp4", fake_prepare_jav_trailer_mp4)
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV ssis123"}},
+            ]
+        ),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+    await handle_group_message(
+        _group_event([{"type": "text", "data": {"text": "预告片"}}]),
+        _settings(tmp_path),
+        state,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert any("转成 MP4" in message for _group, message in napcat.sent)
+    assert napcat.videos
+    assert napcat.videos[-1][1].endswith(".mp4")
+    assert ".m3u8" not in napcat.videos[-1][1]
+
+
+@pytest.mark.asyncio
 async def test_jav_trailer_action_explains_login_requirement(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()
