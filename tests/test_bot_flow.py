@@ -442,6 +442,20 @@ def test_jav_trailer_hls_uri_rewrite_and_extensions() -> None:
     assert bot_main._hls_local_extension("https://media.example.test/segment?token=secret", ".ts") == ".ts"
 
 
+def test_jav_trailer_ffmpeg_reconnect_only_for_remote_inputs(tmp_path: Path) -> None:
+    local_command = bot_main._ffmpeg_trailer_command("ffmpeg", str(tmp_path / "playlist.m3u8"), tmp_path / "out.mp4", "", transcode=False)
+    remote_command = bot_main._ffmpeg_trailer_command(
+        "ffmpeg",
+        "https://media.example.test/playlist.m3u8",
+        tmp_path / "out.mp4",
+        "",
+        transcode=False,
+    )
+
+    assert "-reconnect" not in local_command
+    assert "-reconnect" in remote_command
+
+
 def test_jav_trailer_hls_relative_assets_inherit_playlist_query() -> None:
     playlist_url = "https://media.example.test/hls/index.m3u8?token=secret"
 

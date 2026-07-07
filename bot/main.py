@@ -1954,26 +1954,10 @@ def _ffmpeg_trailer_command(
     command = [ffmpeg_path, "-y", "-hide_banner", "-loglevel", "error"]
     if headers:
         command.extend(["-headers", headers])
-    command.extend(
-        [
-            "-protocol_whitelist",
-            "file,http,https,tcp,tls,crypto",
-            "-allowed_extensions",
-            "ALL",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_delay_max",
-            "5",
-            "-i",
-            trailer_url,
-            "-map",
-            "0:v:0?",
-            "-map",
-            "0:a:0?",
-        ]
-    )
+    command.extend(["-protocol_whitelist", "file,http,https,tcp,tls,crypto", "-allowed_extensions", "ALL"])
+    if urlsplit(trailer_url).scheme in {"http", "https"}:
+        command.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
+    command.extend(["-i", trailer_url, "-map", "0:v:0?", "-map", "0:a:0?"])
     if transcode:
         command.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", "128k"])
     else:
