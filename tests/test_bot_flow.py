@@ -438,6 +438,20 @@ def test_jav_trailer_hls_uri_rewrite_and_extensions() -> None:
     assert bot_main._hls_local_extension("https://media.example.test/segment?token=secret", ".ts") == ".ts"
 
 
+def test_jav_trailer_hls_relative_assets_inherit_playlist_query() -> None:
+    playlist_url = "https://media.example.test/hls/index.m3u8?token=secret"
+
+    assert bot_main._resolve_hls_asset_url(playlist_url, "seg-001.ts") == (
+        "https://media.example.test/hls/seg-001.ts?token=secret"
+    )
+    assert bot_main._resolve_hls_asset_url(playlist_url, "seg-001.ts?part=1") == (
+        "https://media.example.test/hls/seg-001.ts?part=1"
+    )
+    assert bot_main._resolve_hls_asset_url(playlist_url, "https://cdn.example.test/seg-001.ts") == (
+        "https://cdn.example.test/seg-001.ts"
+    )
+
+
 def test_jav_trailer_hls_materializes_local_playlist(tmp_path: Path) -> None:
     class FakeFetcher:
         def __init__(self) -> None:

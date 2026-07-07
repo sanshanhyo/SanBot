@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -1722,7 +1722,7 @@ def _rewrite_hls_playlist_to_local(
             if uri and not uri.lower().startswith("data:"):
                 local_name = f"key_{key_index:03d}{_hls_local_extension(uri, '.key')}"
                 key_index += 1
-                _write_hls_asset(urljoin(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
+                _write_hls_asset(_resolve_hls_asset_url(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
                 rewritten.append(_replace_hls_uri_attribute(line, local_name))
             else:
                 rewritten.append(line)
@@ -1732,7 +1732,7 @@ def _rewrite_hls_playlist_to_local(
             if uri and not uri.lower().startswith("data:"):
                 local_name = f"map_{map_index:03d}{_hls_local_extension(uri, '.mp4')}"
                 map_index += 1
-                _write_hls_asset(urljoin(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
+                _write_hls_asset(_resolve_hls_asset_url(playlist_url, uri), hls_dir / local_name, hls_dir, fetcher)
                 rewritten.append(_replace_hls_uri_attribute(line, local_name))
             else:
                 rewritten.append(line)
@@ -1743,7 +1743,7 @@ def _rewrite_hls_playlist_to_local(
 
         local_name = f"segment_{segment_index:05d}{_hls_local_extension(stripped, '.ts')}"
         segment_index += 1
-        _write_hls_asset(urljoin(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
+        _write_hls_asset(_resolve_hls_asset_url(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
         rewritten.append(local_name)
 
     if segment_index == 0:
@@ -1777,6 +1777,28 @@ def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None
     if not candidates:
         return None
     return max(candidates, key=lambda item: item[0])[1]
+
+
+def _resolve_hls_asset_url(playlist_url: str, uri: str) -> str:
+    resolved = urljoin(playlist_url, uri)
+    base_parts = urlsplit(playlist_url)
+    resolved_parts = urlsplit(resolved)
+    if (
+        base_parts.query
+        and not resolved_parts.query
+        and resolved_parts.scheme in {"http", "https"}
+        and resolved_parts.netloc == base_parts.netloc
+    ):
+        return urlunsplit(
+            (
+                resolved_parts.scheme,
+                resolved_parts.netloc,
+                resolved_parts.path,
+                base_parts.query,
+                resolved_parts.fragment,
+            )
+        )
+    return resolved
 
 
 def _hls_stream_bandwidth(line: str) -> int:
