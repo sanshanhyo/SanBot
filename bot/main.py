@@ -45,6 +45,7 @@ DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
 DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS = 180
 DEFAULT_JAV_TRAILER_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_JAV_TRAILER_IMPERSONATES = ("chrome123", "chrome124", "chrome131", "firefox135", "chrome")
+DEFAULT_JAV_TRAILER_HLS_ASSET_RETRIES = 3
 DEFAULT_JAV_STILLS_MAX_COUNT = 3
 DEFAULT_JAV_STILLS_PDF_MAX_IMAGES = 0
 DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY = 4
@@ -1702,12 +1703,34 @@ class _HlsAssetFetcher:
         return text
 
     def fetch_bytes(self, url: str, *, count_toward_limit: bool = True) -> bytes:
-        try:
-            response = self.session.get(url, timeout=self.timeout_seconds, allow_redirects=True)
-        except self.exceptions.Timeout as exc:
-            raise JavTrailerError("HLS request timed out", "TRAILER_MP4_TIMEOUT") from exc
-        except self.exceptions.RequestException as exc:
-            raise JavTrailerError("HLS request failed", "TRAILER_HLS_DOWNLOAD_FAILED") from exc
+        last_timeout: BaseException | None = None
+        last_request_error: BaseException | None = None
+        response = None
+        for attempt in range(DEFAULT_JAV_TRAILER_HLS_ASSET_RETRIES):
+            try:
+                response = self.session.get(url, timeout=self.timeout_seconds, allow_redirects=True)
+            except self.exceptions.Timeout as exc:
+                last_timeout = exc
+                if attempt < DEFAULT_JAV_TRAILER_HLS_ASSET_RETRIES - 1:
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise JavTrailerError("HLS request timed out", "TRAILER_MP4_TIMEOUT") from exc
+            except self.exceptions.RequestException as exc:
+                last_request_error = exc
+                if attempt < DEFAULT_JAV_TRAILER_HLS_ASSET_RETRIES - 1:
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise JavTrailerError("HLS request failed", "TRAILER_HLS_DOWNLOAD_FAILED") from exc
+
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < DEFAULT_JAV_TRAILER_HLS_ASSET_RETRIES - 1:
+                self._sleep_before_retry(attempt)
+                continue
+            break
+
+        if response is None:
+            if last_timeout is not None:
+                raise JavTrailerError("HLS request timed out", "TRAILER_MP4_TIMEOUT") from last_timeout
+            raise JavTrailerError("HLS request failed", "TRAILER_HLS_DOWNLOAD_FAILED") from last_request_error
 
         if response.status_code == 404:
             logger.warning("JAV trailer HLS asset returned HTTP 404.")
@@ -1722,6 +1745,10 @@ class _HlsAssetFetcher:
             if self.total_bytes > self.max_bytes:
                 raise JavTrailerError("trailer HLS assets are too large", "TRAILER_MP4_TOO_LARGE")
         return content
+
+    @staticmethod
+    def _sleep_before_retry(attempt: int) -> None:
+        time.sleep(0.5 * (attempt + 1))
 
 
 def _rewrite_hls_playlist_to_local(
@@ -1782,11 +1809,16 @@ def _rewrite_hls_playlist_to_local(
         try:
             _write_hls_asset(_resolve_hls_asset_url(playlist_url, stripped), hls_dir / local_name, hls_dir, fetcher)
         except JavTrailerError as exc:
-            if exc.error_code != "TRAILER_HLS_ASSET_NOT_FOUND":
+            if exc.error_code not in {"TRAILER_HLS_ASSET_NOT_FOUND", "TRAILER_HLS_DOWNLOAD_FAILED"}:
                 raise
             skipped_segments += 1
             pending_segment_tags = []
-            logger.warning("Skipping missing JAV trailer HLS segment. skipped=%s seen=%s", skipped_segments, seen_segments)
+            logger.warning(
+                "Skipping unavailable JAV trailer HLS segment. error_code=%s skipped=%s seen=%s",
+                exc.error_code,
+                skipped_segments,
+                seen_segments,
+            )
             continue
         rewritten.extend(pending_segment_tags)
         pending_segment_tags = []
