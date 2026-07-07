@@ -427,6 +427,10 @@ high/index.m3u8
         bot_main._select_hls_variant_url(playlist, "https://media.example.test/master.m3u8")
         == "https://media.example.test/high/index.m3u8"
     )
+    assert bot_main._hls_variant_urls(playlist, "https://media.example.test/master.m3u8") == [
+        "https://media.example.test/high/index.m3u8",
+        "https://media.example.test/low/index.m3u8",
+    ]
 
 
 def test_jav_trailer_hls_uri_rewrite_and_extensions() -> None:

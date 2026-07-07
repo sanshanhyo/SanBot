@@ -1620,8 +1620,7 @@ def _materialize_hls_playlist_sync(
         raise JavTrailerError("curl-cffi is not installed", "CURL_CFFI_NOT_FOUND") from exc
 
     hls_dir = hls_dir.resolve()
-    shutil.rmtree(hls_dir, ignore_errors=True)
-    hls_dir.mkdir(parents=True, exist_ok=True)
+    _reset_hls_dir(hls_dir)
 
     headers = _jav_trailer_request_headers(payload, settings)
     session = curl_requests.Session(
@@ -1637,22 +1636,45 @@ def _materialize_hls_playlist_sync(
         )
         playlist_url = trailer_url
         playlist_text = fetcher.fetch_text(playlist_url)
-        variant_url = _select_hls_variant_url(playlist_text, playlist_url)
-        if variant_url:
-            playlist_url = variant_url
-            playlist_text = fetcher.fetch_text(playlist_url)
-        local_playlist = _rewrite_hls_playlist_to_local(
-            playlist_text,
-            playlist_url,
-            hls_dir,
-            fetcher,
-        )
+        variant_urls = _hls_variant_urls(playlist_text, playlist_url)
+        playlist_candidates = variant_urls or [playlist_url]
+        last_error: JavTrailerError | None = None
+        for candidate_url in playlist_candidates:
+            _reset_hls_dir(hls_dir)
+            fetcher.total_bytes = 0
+            try:
+                candidate_text = fetcher.fetch_text(candidate_url) if variant_urls else playlist_text
+                local_playlist = _rewrite_hls_playlist_to_local(
+                    candidate_text,
+                    candidate_url,
+                    hls_dir,
+                    fetcher,
+                )
+                break
+            except JavTrailerError as exc:
+                if not variant_urls or exc.error_code not in {
+                    "TRAILER_HLS_DOWNLOAD_FAILED",
+                    "TRAILER_HLS_EMPTY",
+                    "TRAILER_HLS_INVALID",
+                }:
+                    raise
+                last_error = exc
+                logger.warning("JAV trailer HLS variant failed; trying the next variant. error_code=%s", exc.error_code)
+        else:
+            if last_error:
+                raise last_error
+            raise JavTrailerError("empty HLS playlist", "TRAILER_HLS_EMPTY")
     finally:
         session.close()
 
     if not local_playlist.is_file() or local_playlist.stat().st_size <= 0:
         raise JavTrailerError("empty HLS playlist", "TRAILER_HLS_EMPTY")
     return local_playlist
+
+
+def _reset_hls_dir(hls_dir: Path) -> None:
+    shutil.rmtree(hls_dir, ignore_errors=True)
+    hls_dir.mkdir(parents=True, exist_ok=True)
 
 
 class _HlsAssetFetcher:
@@ -1761,6 +1783,11 @@ def _write_hls_asset(asset_url: str, asset_path: Path, hls_dir: Path, fetcher: _
 
 
 def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None:
+    urls = _hls_variant_urls(playlist_text, playlist_url)
+    return urls[0] if urls else None
+
+
+def _hls_variant_urls(playlist_text: str, playlist_url: str) -> list[str]:
     lines = playlist_text.splitlines()
     candidates: list[tuple[int, str]] = []
     for index, line in enumerate(lines):
@@ -1775,8 +1802,8 @@ def _select_hls_variant_url(playlist_text: str, playlist_url: str) -> str | None
             candidates.append((bandwidth, urljoin(playlist_url, uri)))
             break
     if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+        return []
+    return [url for _bandwidth, url in sorted(candidates, key=lambda item: item[0], reverse=True)]
 
 
 def _resolve_hls_asset_url(playlist_url: str, uri: str) -> str:
