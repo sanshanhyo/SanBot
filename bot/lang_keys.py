@@ -13,6 +13,7 @@ class LangKey:
     GROUP_HISTORY_EMPTY = 'group_history_empty'
     UNKNOWN = 'unknown'
     UNKNOWN_COMMAND = 'unknown_command'
+    FEATURE_NOT_ALLOWED = 'feature_not_allowed'
     TIME_UNKNOWN = 'time_unknown'
     BAD_BACKEND_RESPONSE = 'bad_backend_response'
     BAD_SEARCH_RESULT = 'bad_search_result'

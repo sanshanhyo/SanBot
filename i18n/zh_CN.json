@@ -9,6 +9,7 @@
   "group_history_empty": "额……本群还没有任务记录。",
   "unknown": "未知",
   "unknown_command": "我看不懂你在输入什么(つд⊂)！输入‘帮助’获取命令列表",
+  "feature_not_allowed": "这个功能暂时没有在本群开放喔(｡•́︿•̀｡)",
   "time_unknown": "时间未知",
   "bad_backend_response": "返回结果无效",
   "bad_search_result": "搜索结果无效",

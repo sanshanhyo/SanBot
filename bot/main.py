@@ -121,6 +121,12 @@ def _env_id_set(name: str) -> set[str]:
     return {item for item in ids if item.isdigit()}
 
 
+def _env_bool_alias(primary: str, fallback: str, default: bool) -> bool:
+    if os.getenv(primary) not in {None, ""}:
+        return _env_bool(primary, default)
+    return _env_bool(fallback, default)
+
+
 @dataclass(frozen=True)
 class BotSettings:
     bot_qq_id: str
@@ -141,24 +147,41 @@ class BotSettings:
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     max_upload_filename_bytes: int = MAX_UPLOAD_FILENAME_BYTES
     upload_retries: int = DEFAULT_UPLOAD_RETRIES
+    enable_jm_download: bool = True
+    jm_download_allowed_group_ids: set[str] = field(default_factory=set)
     enable_search: bool = True
+    jm_search_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_jm_ranking: bool = True
+    jm_ranking_allowed_group_ids: set[str] = field(default_factory=set)
     enable_javlibrary: bool = True
+    enable_jav_query: bool = True
+    jav_query_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_av_search: bool = True
+    av_search_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_actor_search: bool = True
+    actor_search_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_db_ranking: bool = True
+    db_ranking_allowed_group_ids: set[str] = field(default_factory=set)
     search_result_limit: int = DEFAULT_SEARCH_RESULT_LIMIT
     search_confirm_timeout_seconds: int = 600
     ranking_result_limit: int = DEFAULT_RANKING_RESULT_LIMIT
     user_command_cooldown_seconds: int = DEFAULT_USER_COMMAND_COOLDOWN_SECONDS
     jav_action_timeout_seconds: int = DEFAULT_JAV_ACTION_TIMEOUT_SECONDS
     enable_jav_resource_page: bool = True
+    jav_resource_page_allowed_group_ids: set[str] = field(default_factory=set)
     enable_jav_trailer: bool = True
+    jav_trailer_allowed_group_ids: set[str] = field(default_factory=set)
     jav_trailer_ffmpeg_path: str = "ffmpeg"
     jav_trailer_convert_timeout_seconds: int = DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS
     jav_trailer_max_bytes: int = DEFAULT_JAV_TRAILER_MAX_BYTES
     jav_trailer_cookie: str | None = None
     jav_trailer_impersonate: str = "random"
     enable_jav_stills: bool = False
+    jav_stills_allowed_group_ids: set[str] = field(default_factory=set)
     jav_stills_max_count: int = DEFAULT_JAV_STILLS_MAX_COUNT
     jav_stills_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
     enable_jav_stills_pdf: bool = True
+    jav_stills_pdf_allowed_group_ids: set[str] = field(default_factory=set)
     jav_stills_pdf_max_images: int = DEFAULT_JAV_STILLS_PDF_MAX_IMAGES
     jav_stills_pdf_download_concurrency: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_CONCURRENCY
     jav_stills_pdf_download_timeout_seconds: int = DEFAULT_JAV_STILLS_PDF_DOWNLOAD_TIMEOUT_SECONDS
@@ -169,6 +192,12 @@ class BotSettings:
     missav_base_url: str = "https://missav.live"
     missav_allowed_group_ids: set[str] = field(default_factory=set)
     missav_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
+    enable_tg_mirror: bool = False
+    tg_mirror_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_history: bool = True
+    history_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_admin_commands: bool = True
+    admin_allowed_group_ids: set[str] = field(default_factory=set)
     manager_qq_ids: set[str] = field(default_factory=set)
     allowed_group_ids: set[str] = field(default_factory=set)
     health_check_interval_seconds: int = 60
@@ -207,8 +236,21 @@ class BotSettings:
                 _env_int("NAPCAT_MAX_UPLOAD_FILENAME_BYTES", MAX_UPLOAD_FILENAME_BYTES),
             ),
             upload_retries=max(1, _env_int("NAPCAT_UPLOAD_RETRIES", DEFAULT_UPLOAD_RETRIES)),
-            enable_search=_env_bool("ENABLE_SEARCH", True),
+            enable_jm_download=_env_bool("ENABLE_JM_DOWNLOAD", True),
+            jm_download_allowed_group_ids=_env_id_set("JM_DOWNLOAD_ALLOWED_GROUP_IDS"),
+            enable_search=_env_bool_alias("ENABLE_JM_SEARCH", "ENABLE_SEARCH", True),
+            jm_search_allowed_group_ids=_env_id_set("JM_SEARCH_ALLOWED_GROUP_IDS"),
+            enable_jm_ranking=_env_bool("ENABLE_JM_RANKING", True),
+            jm_ranking_allowed_group_ids=_env_id_set("JM_RANKING_ALLOWED_GROUP_IDS"),
             enable_javlibrary=_env_bool("ENABLE_JAVLIBRARY", True),
+            enable_jav_query=_env_bool_alias("ENABLE_JAV_QUERY", "ENABLE_JAVLIBRARY", True),
+            jav_query_allowed_group_ids=_env_id_set("JAV_QUERY_ALLOWED_GROUP_IDS"),
+            enable_av_search=_env_bool("ENABLE_AV_SEARCH", True),
+            av_search_allowed_group_ids=_env_id_set("AV_SEARCH_ALLOWED_GROUP_IDS"),
+            enable_actor_search=_env_bool("ENABLE_ACTOR_SEARCH", True),
+            actor_search_allowed_group_ids=_env_id_set("ACTOR_SEARCH_ALLOWED_GROUP_IDS"),
+            enable_db_ranking=_env_bool("ENABLE_DB_RANKING", True),
+            db_ranking_allowed_group_ids=_env_id_set("DB_RANKING_ALLOWED_GROUP_IDS"),
             search_result_limit=max(1, min(10, _env_int("SEARCH_RESULT_LIMIT", DEFAULT_SEARCH_RESULT_LIMIT))),
             search_confirm_timeout_seconds=max(30, _env_int("SEARCH_CONFIRM_TIMEOUT_SECONDS", 600)),
             ranking_result_limit=max(1, min(20, _env_int("RANKING_RESULT_LIMIT", DEFAULT_RANKING_RESULT_LIMIT))),
@@ -218,7 +260,9 @@ class BotSettings:
             ),
             jav_action_timeout_seconds=max(30, _env_int("JAV_ACTION_TIMEOUT_SECONDS", DEFAULT_JAV_ACTION_TIMEOUT_SECONDS)),
             enable_jav_resource_page=_env_bool("ENABLE_JAV_RESOURCE_PAGE", True),
+            jav_resource_page_allowed_group_ids=_env_id_set("JAV_RESOURCE_PAGE_ALLOWED_GROUP_IDS"),
             enable_jav_trailer=_env_bool("ENABLE_JAV_TRAILER", True),
+            jav_trailer_allowed_group_ids=_env_id_set("JAV_TRAILER_ALLOWED_GROUP_IDS"),
             jav_trailer_ffmpeg_path=os.getenv("JAV_TRAILER_FFMPEG_PATH") or "ffmpeg",
             jav_trailer_convert_timeout_seconds=max(
                 10,
@@ -233,12 +277,14 @@ class BotSettings:
                 os.getenv("JAV_TRAILER_IMPERSONATE") or os.getenv("JAVLIBRARY_IMPERSONATE") or "random"
             ),
             enable_jav_stills=_env_bool("ENABLE_JAV_STILLS", False),
+            jav_stills_allowed_group_ids=_env_id_set("JAV_STILLS_ALLOWED_GROUP_IDS"),
             jav_stills_max_count=max(1, min(6, _env_int("JAV_STILLS_MAX_COUNT", DEFAULT_JAV_STILLS_MAX_COUNT))),
             jav_stills_max_group_members=max(
                 0,
                 _env_int("JAV_STILLS_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS),
             ),
             enable_jav_stills_pdf=_env_bool("ENABLE_JAV_STILLS_PDF", True),
+            jav_stills_pdf_allowed_group_ids=_env_id_set("JAV_STILLS_PDF_ALLOWED_GROUP_IDS"),
             jav_stills_pdf_max_images=max(
                 0,
                 _env_int("JAV_STILLS_PDF_MAX_IMAGES", DEFAULT_JAV_STILLS_PDF_MAX_IMAGES),
@@ -276,6 +322,12 @@ class BotSettings:
             missav_base_url=(os.getenv("MISSAV_BASE_URL") or "https://missav.live").rstrip("/"),
             missav_allowed_group_ids=_env_id_set("MISSAV_ALLOWED_GROUP_IDS"),
             missav_max_group_members=max(0, _env_int("MISSAV_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS)),
+            enable_tg_mirror=_env_bool("ENABLE_TG_MIRROR", False),
+            tg_mirror_allowed_group_ids=_env_id_set("TG_MIRROR_ALLOWED_GROUP_IDS"),
+            enable_history=_env_bool("ENABLE_HISTORY", True),
+            history_allowed_group_ids=_env_id_set("HISTORY_ALLOWED_GROUP_IDS"),
+            enable_admin_commands=_env_bool("ENABLE_ADMIN_COMMANDS", True),
+            admin_allowed_group_ids=_env_id_set("ADMIN_ALLOWED_GROUP_IDS"),
             manager_qq_ids=manager_qq_ids,
             allowed_group_ids=_env_id_set("ALLOWED_GROUP_IDS") or _env_id_set("BOT_ALLOWED_GROUP_IDS"),
             health_check_interval_seconds=max(0, _env_int("HEALTH_CHECK_INTERVAL_SECONDS", 60)),
@@ -438,6 +490,67 @@ def _is_group_allowed(group_id: str, settings: BotSettings) -> bool:
     return not settings.allowed_group_ids or str(group_id) in settings.allowed_group_ids
 
 
+def _is_group_in_allowed_set(group_id: str, allowed_group_ids: set[str]) -> bool:
+    return not allowed_group_ids or str(group_id) in allowed_group_ids
+
+
+def _is_feature_allowed(group_id: str, enabled: bool, allowed_group_ids: set[str]) -> bool:
+    return enabled and _is_group_in_allowed_set(group_id, allowed_group_ids)
+
+
+def _is_jav_master_enabled(settings: BotSettings) -> bool:
+    return settings.enable_javlibrary
+
+
+def _is_parse_action_allowed(group_id: str, action: ParseAction, settings: BotSettings) -> bool:
+    if action == ParseAction.HISTORY:
+        return _is_feature_allowed(group_id, settings.enable_history, settings.history_allowed_group_ids)
+    if action == ParseAction.GROUP_HISTORY:
+        return _is_feature_allowed(group_id, settings.enable_history, settings.history_allowed_group_ids)
+    if action in {ParseAction.TG_BIND, ParseAction.TG_LIST, ParseAction.TG_LATEST}:
+        return _is_feature_allowed(group_id, settings.enable_tg_mirror, settings.tg_mirror_allowed_group_ids)
+    if action == ParseAction.OK:
+        return _is_feature_allowed(group_id, settings.enable_jm_download, settings.jm_download_allowed_group_ids)
+    if action == ParseAction.SEARCH:
+        return _is_feature_allowed(group_id, settings.enable_search, settings.jm_search_allowed_group_ids)
+    if action == ParseAction.RANKING:
+        return _is_feature_allowed(group_id, settings.enable_jm_ranking, settings.jm_ranking_allowed_group_ids)
+    if action == ParseAction.JAV:
+        return _is_jav_master_enabled(settings) and _is_feature_allowed(
+            group_id,
+            settings.enable_jav_query,
+            settings.jav_query_allowed_group_ids,
+        )
+    if action == ParseAction.AV_SEARCH:
+        return _is_jav_master_enabled(settings) and _is_feature_allowed(
+            group_id,
+            settings.enable_av_search,
+            settings.av_search_allowed_group_ids,
+        )
+    if action == ParseAction.ACTOR_SEARCH:
+        return _is_jav_master_enabled(settings) and _is_feature_allowed(
+            group_id,
+            settings.enable_actor_search,
+            settings.actor_search_allowed_group_ids,
+        )
+    if action == ParseAction.DB_RANKING:
+        return _is_jav_master_enabled(settings) and _is_feature_allowed(
+            group_id,
+            settings.enable_db_ranking,
+            settings.db_ranking_allowed_group_ids,
+        )
+    return True
+
+
+def _blocked_feature_message_key(group_id: str, action: ParseAction, settings: BotSettings) -> str:
+    if action == ParseAction.SEARCH and not settings.enable_search:
+        return LangKey.SEARCH_DISABLED
+    if action in {ParseAction.JAV, ParseAction.AV_SEARCH, ParseAction.ACTOR_SEARCH, ParseAction.DB_RANKING}:
+        if not settings.enable_javlibrary:
+            return LangKey.JAV_DISABLED
+    return LangKey.FEATURE_NOT_ALLOWED
+
+
 async def handle_group_message(
     event: dict[str, Any],
     settings: BotSettings,
@@ -495,6 +608,19 @@ async def handle_group_message(
 
     admin_command = _parse_admin_command(event, settings.bot_qq_id)
     if admin_command is not None:
+        if not _is_feature_allowed(group_id, settings.enable_admin_commands, settings.admin_allowed_group_ids):
+            await _record_command_audit(
+                backend,
+                group_id,
+                user_id,
+                f"admin:{admin_command.name}",
+                admin_command.target,
+                "blocked",
+                "FEATURE_NOT_ALLOWED",
+                0,
+            )
+            await _safe_send(napcat, group_id, lang_text(LangKey.FEATURE_NOT_ALLOWED))
+            return
         started = time.monotonic()
         try:
             handled = await _handle_admin_command(
@@ -626,6 +752,20 @@ async def handle_group_message(
         None,
         0,
     )
+
+    if not _is_parse_action_allowed(group_id, parse_result.action, settings):
+        await _record_command_audit(
+            backend,
+            group_id,
+            user_id,
+            parse_result.action.value,
+            _audit_target(parse_result),
+            "blocked",
+            "FEATURE_NOT_ALLOWED",
+            0,
+        )
+        await _safe_send(napcat, group_id, lang_text(_blocked_feature_message_key(group_id, parse_result.action, settings)))
+        return
 
     if parse_result.action == ParseAction.USAGE:
         await _safe_send(napcat, group_id, lang_text(LangKey.USAGE))
@@ -1165,6 +1305,11 @@ async def _handle_pending_confirmation(
     if text not in _confirm_words():
         return False
 
+    if not _is_feature_allowed(group_id, settings.enable_jm_download, settings.jm_download_allowed_group_ids):
+        state.pending_downloads.pop(key, None)
+        await _safe_send(napcat, group_id, lang_text(LangKey.FEATURE_NOT_ALLOWED))
+        return True
+
     if _needs_large_album_confirmation(pending.page_count, settings) and not pending.large_warning_sent:
         state.pending_downloads[key] = replace(pending, large_warning_sent=True)
         await _safe_send(
@@ -1234,6 +1379,11 @@ async def _handle_pending_search_selection(
             group_id,
             lang_text(LangKey.SEARCH_FAILED, error=lang_text(LangKey.BAD_SEARCH_RESULT), error_code="SEARCH_BAD_RESULT"),
         )
+        return True
+
+    if not _is_feature_allowed(group_id, settings.enable_jm_download, settings.jm_download_allowed_group_ids):
+        state.pending_searches.pop(key, None)
+        await _safe_send(napcat, group_id, lang_text(LangKey.FEATURE_NOT_ALLOWED))
         return True
 
     try:
@@ -1498,6 +1648,10 @@ async def _handle_pending_jav_action(
     if action not in pending.actions:
         await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
         return True
+    if not await _is_jav_action_allowed(action, group_id, settings, napcat):
+        state.pending_jav_actions.pop((group_id, user_id), None)
+        await _safe_send(napcat, group_id, lang_text(LangKey.FEATURE_NOT_ALLOWED))
+        return True
 
     if action == "resource":
         await _send_jav_resource_page(pending.payload, group_id, napcat)
@@ -1509,6 +1663,32 @@ async def _handle_pending_jav_action(
     elif action == "stream":
         await _send_missav_link(pending.payload, group_id, settings, napcat)
     return True
+
+
+async def _is_jav_action_allowed(
+    action: str,
+    group_id: str,
+    settings: BotSettings,
+    napcat: NapCatClient,
+) -> bool:
+    if action == "resource":
+        return _is_feature_allowed(
+            group_id,
+            settings.enable_jav_resource_page,
+            settings.jav_resource_page_allowed_group_ids,
+        )
+    if action == "trailer":
+        return _is_feature_allowed(group_id, settings.enable_jav_trailer, settings.jav_trailer_allowed_group_ids)
+    if action == "stills":
+        if not _is_feature_allowed(group_id, settings.enable_jav_stills, settings.jav_stills_allowed_group_ids):
+            return False
+        if settings.jav_stills_max_group_members <= 0:
+            return True
+        member_count = await _get_group_member_count(group_id, napcat)
+        return member_count is not None and member_count <= settings.jav_stills_max_group_members
+    if action == "stream":
+        return await _is_missav_allowed(group_id, settings, napcat)
+    return False
 
 
 async def _refresh_jav_payload_for_trailer(pending: PendingJavActions, backend: BackendClient) -> dict[str, Any]:
@@ -1526,20 +1706,30 @@ async def _available_jav_actions(
     napcat: NapCatClient,
 ) -> set[str]:
     actions: set[str] = set()
-    if settings.enable_jav_trailer and (
+    if _is_feature_allowed(group_id, settings.enable_jav_trailer, settings.jav_trailer_allowed_group_ids) and (
         _payload_str(payload, "trailer_url")
         or _payload_str(payload, "trailer_page_url")
         or bool(payload.get("trailer_requires_login"))
     ):
         actions.add("trailer")
-    if settings.enable_jav_stills and _payload_list(payload, "preview_image_urls"):
+    if (
+        _is_feature_allowed(group_id, settings.enable_jav_stills, settings.jav_stills_allowed_group_ids)
+        and _payload_list(payload, "preview_image_urls")
+    ):
         member_count = await _get_group_member_count(group_id, napcat)
         if (
             settings.jav_stills_max_group_members <= 0
             or (member_count is not None and member_count <= settings.jav_stills_max_group_members)
         ):
             actions.add("stills")
-    if settings.enable_jav_resource_page and _jav_resource_page_url(payload):
+    if (
+        _is_feature_allowed(
+            group_id,
+            settings.enable_jav_resource_page,
+            settings.jav_resource_page_allowed_group_ids,
+        )
+        and _jav_resource_page_url(payload)
+    ):
         actions.add("resource")
     if await _is_missav_allowed(group_id, settings, napcat):
         actions.add("stream")
@@ -2186,7 +2376,7 @@ async def _send_jav_stills(
             logger.warning("Could not send JAV still image %s.", url, exc_info=True)
     if sent_count == 0:
         await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_FAILED))
-    if settings.enable_jav_stills_pdf:
+    if _is_feature_allowed(group_id, settings.enable_jav_stills_pdf, settings.jav_stills_pdf_allowed_group_ids):
         await _send_jav_stills_pdf(payload, all_urls, group_id, settings, napcat)
 
 

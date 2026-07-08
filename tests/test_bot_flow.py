@@ -381,6 +381,7 @@ def _settings(tmp_path: Path, enable_search: bool = True) -> BotSettings:
         job_timeout_seconds=30,
         poll_interval_seconds=0.01,
         enable_search=enable_search,
+        enable_tg_mirror=True,
         search_confirm_timeout_seconds=60,
     )
 
@@ -664,6 +665,82 @@ async def test_group_whitelist_blocks_unlisted_group(tmp_path: Path) -> None:
     assert backend.previewed == []
     assert backend.audit_events[-1]["command"] == "blocked_group"
     assert backend.audit_events[-1]["error_code"] == "GROUP_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
+async def test_feature_whitelist_blocks_jm_download(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(_settings(tmp_path), jm_download_allowed_group_ids={"99999"})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JM123456"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.previewed == []
+    assert any("暂时没有在本群开放" in message for _group, message in napcat.sent)
+    assert backend.audit_events[-1]["status"] == "blocked"
+    assert backend.audit_events[-1]["error_code"] == "FEATURE_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
+async def test_feature_whitelist_blocks_tg_commands(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(_settings(tmp_path), tg_mirror_allowed_group_ids={"99999"})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG绑定 https://t.me/example_channel"}},
+            ],
+            role="admin",
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert backend.tg_bound_refs == []
+    assert any("暂时没有在本群开放" in message for _group, message in napcat.sent)
+    assert backend.audit_events[-1]["error_code"] == "FEATURE_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
+async def test_jav_action_whitelist_hides_trailer_entry(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(_settings(tmp_path), jav_trailer_allowed_group_ids={"99999"})
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JAV SSIS-123"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    messages = "\n".join(message for _group, message in napcat.sent)
+    assert "预告片" not in messages
 
 
 @pytest.mark.asyncio
