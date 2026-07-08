@@ -145,8 +145,10 @@ class BackendSettings:
     jav_actor_alias_timeout_seconds: float
     jav_actor_alias_candidate_limit: int
     enable_tg_mirror: bool
+    tg_mirror_mode: str
     tg_api_id: int | None
     tg_api_hash: str | None
+    tg_bot_token: str | None
     tg_session_string: str | None
     tg_session_path: Path | None
     tg_max_file_bytes: int
@@ -211,8 +213,10 @@ class BackendSettings:
             jav_actor_alias_timeout_seconds=max(0.5, _env_float("JAV_ACTOR_ALIAS_TIMEOUT_SECONDS", 4.0)),
             jav_actor_alias_candidate_limit=max(1, min(12, _env_int("JAV_ACTOR_ALIAS_CANDIDATE_LIMIT", 6))),
             enable_tg_mirror=_env_bool("ENABLE_TG_MIRROR", False),
+            tg_mirror_mode=os.getenv("TG_MIRROR_MODE", "telethon"),
             tg_api_id=_env_int("TG_API_ID", 0) or None,
             tg_api_hash=os.getenv("TG_API_HASH") or None,
+            tg_bot_token=os.getenv("TG_BOT_TOKEN") or None,
             tg_session_string=os.getenv("TG_SESSION_STRING") or None,
             tg_session_path=Path(os.getenv("TG_SESSION_PATH", "./data/telegram.session"))
             if os.getenv("TG_SESSION_PATH")
@@ -294,8 +298,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         TelegramMirrorConfig(
             data_dir=settings.data_dir,
             enabled=settings.enable_tg_mirror,
+            mode=settings.tg_mirror_mode,
             api_id=settings.tg_api_id,
             api_hash=settings.tg_api_hash,
+            bot_token=settings.tg_bot_token,
             session_string=settings.tg_session_string,
             session_path=settings.tg_session_path,
             max_file_bytes=settings.tg_max_file_bytes,

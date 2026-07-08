@@ -163,6 +163,8 @@ MISSAV_BASE_URL=https://missav.live
 MISSAV_ALLOWED_GROUP_IDS=
 MISSAV_MAX_GROUP_MEMBERS=150
 ENABLE_TG_MIRROR=false
+TG_MIRROR_MODE=telethon
+TG_BOT_TOKEN=
 TG_API_ID=
 TG_API_HASH=
 TG_SESSION_STRING=
@@ -277,6 +279,8 @@ DATA_DIR=./data
 | `MISSAV_ALLOWED_GROUP_IDS` | 外部播放入口白名单群号，逗号分隔；未配置时不显示 |
 | `MISSAV_MAX_GROUP_MEMBERS` | 外部播放入口允许的最大群人数，默认 `150`；超过会强制隐藏 |
 | `ENABLE_TG_MIRROR` | 是否启用 Telegram 频道镜像，默认 `false` |
+| `TG_MIRROR_MODE` | Telegram 镜像模式，`telethon` 使用用户会话，`bot` 使用 Bot Token，默认 `telethon` |
+| `TG_BOT_TOKEN` | `bot` 模式使用的 BotFather token；不要提交到 Git |
 | `TG_API_ID` | Telegram API ID，可在 Telegram API 管理页创建应用后获得 |
 | `TG_API_HASH` | Telegram API Hash，不要提交到 Git |
 | `TG_SESSION_STRING` | Telethon 用户会话字符串，优先使用；不要提交到 Git |
@@ -548,7 +552,7 @@ aliases:
 
 后端也会把成功搜索到的演员名写入 SQLite 缓存，下次同名搜索会优先复用。
 
-Telegram 频道镜像默认关闭，需要先配置 `ENABLE_TG_MIRROR=true`、`TG_API_ID`、`TG_API_HASH` 和一个已登录的 Telethon session。启用后，群管理员或机器人管理者可以绑定频道并手动拉取最近图片/视频：
+Telegram 频道镜像默认关闭。启用后，群管理员或机器人管理者可以绑定频道并手动拉取最近图片/视频：
 
 ```text
 @机器人 TG绑定 https://t.me/example_channel
@@ -558,7 +562,24 @@ Telegram 频道镜像默认关闭，需要先配置 `ENABLE_TG_MIRROR=true`、`T
 
 第一版只做手动拉取，不做定时自动同步。后端会记录已转发的 `channel_id + message_id`，避免重复转发；单个媒体超过 `TG_MAX_FILE_BYTES` 会跳过。请只绑定你有权访问和转发内容的频道。
 
-生成 Telethon session 推荐使用本地 session 文件，少碰容易转义出错的长字符串：
+如果无法申请 Telegram `api_id/api_hash`，可以使用 Bot Token 模式。这个模式不支持频道历史，只能收到 bot 加入频道后新发的 `channel_post`，并且云端 Bot API 下载上限建议按 20MB 配置：
+
+```env
+ENABLE_TG_MIRROR=true
+TG_MIRROR_MODE=bot
+TG_BOT_TOKEN=BotFather 给你的 token
+TG_MAX_FILE_BYTES=20971520
+```
+
+Bot Token 模式使用步骤：
+
+1. 用 BotFather 创建 Telegram bot，拿到 token。
+2. 把这个 TG bot 加入你的频道，并设为管理员。
+3. 频道里新发一条图片或 20MB 以下视频。
+4. QQ 群管理员发送 `@机器人 TG绑定 https://t.me/example_channel`。
+5. QQ 群管理员发送 `@机器人 TG最新 5` 拉取新内容。
+
+如果以后能申请到 `api_id/api_hash`，可以切回 Telethon 模式以支持历史消息和更大的文件。生成 Telethon session 推荐使用本地 session 文件，少碰容易转义出错的长字符串：
 
 ```bash
 ./.venv/bin/python tools/generate_tg_session.py
@@ -574,6 +595,7 @@ Telegram 频道镜像默认关闭，需要先配置 `ENABLE_TG_MIRROR=true`、`T
 
 ```env
 ENABLE_TG_MIRROR=true
+TG_MIRROR_MODE=telethon
 TG_API_ID=你的 api id
 TG_API_HASH=你的 api hash
 TG_SESSION_PATH=./data/telegram.session

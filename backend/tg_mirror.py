@@ -11,10 +11,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
+
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TG_REF_PATTERN = re.compile(r"^[A-Za-z0-9_]{5,64}$")
 ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+BOT_API_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
 
 class TelegramMirrorError(Exception):
@@ -28,8 +32,10 @@ class TelegramMirrorError(Exception):
 class TelegramMirrorConfig:
     data_dir: Path
     enabled: bool = False
+    mode: str = "telethon"
     api_id: int | None = None
     api_hash: str | None = None
+    bot_token: str | None = None
     session_string: str | None = None
     session_path: Path | None = None
     max_file_bytes: int = 100 * 1024 * 1024
@@ -84,6 +90,14 @@ class TelegramMirrorService:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tg_messages_group ON tg_messages(group_id, id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tg_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
 
     async def close(self) -> None:
         if self._client is not None:
@@ -93,6 +107,9 @@ class TelegramMirrorService:
     async def bind_channel(self, group_id: str, channel_ref: str) -> dict[str, Any]:
         self._require_enabled()
         normalized_ref = normalize_channel_ref(channel_ref)
+        if self._mode == "bot":
+            return self._bind_bot_channel(group_id, normalized_ref)
+
         client = await self._get_client()
         try:
             entity = await client.get_entity(normalized_ref)
@@ -124,6 +141,46 @@ class TelegramMirrorService:
             ).fetchone()
         return _channel_row_to_dict(row)
 
+    def _bind_bot_channel(self, group_id: str, normalized_ref: str) -> dict[str, Any]:
+        now = _utc_now()
+        placeholder_channel_id = f"bot:{normalized_ref.lower()}"
+        title = normalized_ref
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM tg_channels
+                WHERE group_id = ? AND channel_ref = ?
+                """,
+                (str(group_id), normalized_ref),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO tg_channels (
+                        group_id, channel_ref, channel_id, channel_title, enabled, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (str(group_id), normalized_ref, placeholder_channel_id, title, now, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE tg_channels
+                    SET channel_title = ?, enabled = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (row["channel_title"] or title, now, row["id"]),
+                )
+            row = conn.execute(
+                """
+                SELECT * FROM tg_channels
+                WHERE group_id = ? AND channel_ref = ?
+                """,
+                (str(group_id), normalized_ref),
+            ).fetchone()
+        return _channel_row_to_dict(row)
+
     def list_channels(self, group_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -142,6 +199,8 @@ class TelegramMirrorService:
         channels = self.list_channels(group_id)
         if not channels:
             return {"items": [], "channels": [], "skipped": 0}
+        if self._mode == "bot":
+            return await self._fetch_latest_bot(group_id, limit, channels)
 
         client = await self._get_client()
         remaining = max(1, min(limit, self.config.max_fetch_limit))
@@ -194,6 +253,197 @@ class TelegramMirrorService:
                 if path.is_file() and path.is_relative_to(self.media_dir):
                     path.unlink(missing_ok=True)
             conn.execute("DELETE FROM tg_messages WHERE fetched_at < ?", (cutoff_text,))
+
+    async def _fetch_latest_bot(
+        self,
+        group_id: str,
+        limit: int,
+        requested_channels: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        all_channels = self._list_all_channels()
+        if not all_channels:
+            return {"items": [], "channels": requested_channels, "skipped": 0}
+
+        remaining = max(1, min(limit, self.config.max_fetch_limit))
+        items: list[dict[str, Any]] = []
+        skipped = 0
+        offset = self._get_state_int("bot_update_offset")
+        updates = await self._bot_api_json("getUpdates", params={"offset": offset, "limit": 100, "timeout": 0})
+        result = updates.get("result")
+        if not isinstance(result, list):
+            raise TelegramMirrorError("Telegram Bot API 返回结果无效", "TG_BOT_BAD_RESPONSE")
+
+        last_consumed_update_id: int | None = None
+        for update in result:
+            if not isinstance(update, dict):
+                continue
+            update_id = _safe_int(update.get("update_id"))
+            channel_post = update.get("channel_post")
+            if not isinstance(channel_post, dict):
+                if update_id is not None:
+                    last_consumed_update_id = update_id
+                continue
+
+            chat = channel_post.get("chat")
+            if not isinstance(chat, dict):
+                if update_id is not None:
+                    last_consumed_update_id = update_id
+                continue
+
+            matched_channels = self._matching_bot_channels(all_channels, chat)
+            if not matched_channels:
+                if update_id is not None:
+                    last_consumed_update_id = update_id
+                continue
+
+            media = _bot_message_media(channel_post)
+            if media is None:
+                if update_id is not None:
+                    last_consumed_update_id = update_id
+                continue
+
+            message_id = _safe_int(channel_post.get("message_id"))
+            if message_id is None:
+                if update_id is not None:
+                    last_consumed_update_id = update_id
+                continue
+
+            requested_group_hit = any(str(channel["group_id"]) == str(group_id) for channel in matched_channels)
+            if requested_group_hit and len(items) >= remaining:
+                break
+
+            for channel in matched_channels:
+                real_channel = self._update_bot_channel_from_chat(channel, chat)
+                if self._message_seen(real_channel["group_id"], real_channel["channel_id"], message_id):
+                    continue
+                if media["file_size"] and int(media["file_size"]) > self._bot_max_file_bytes:
+                    self._record_skipped_message(real_channel, message_id, media["media_type"], int(media["file_size"]), _bot_message_datetime(channel_post))
+                    if str(real_channel["group_id"]) == str(group_id):
+                        skipped += 1
+                    continue
+                try:
+                    item = await self._download_bot_media(real_channel, channel_post, media)
+                except TelegramMirrorError:
+                    raise
+                except Exception:
+                    logger.exception("Could not download Telegram Bot API media.")
+                    raise TelegramMirrorError("Telegram Bot API 媒体下载失败", "TG_BOT_DOWNLOAD_FAILED") from None
+                if item is None:
+                    if str(real_channel["group_id"]) == str(group_id):
+                        skipped += 1
+                    continue
+                if str(real_channel["group_id"]) == str(group_id) and len(items) < remaining:
+                    items.append(item)
+
+            if update_id is not None:
+                last_consumed_update_id = update_id
+
+        if last_consumed_update_id is not None:
+            self._set_state("bot_update_offset", str(last_consumed_update_id + 1))
+        return {"items": items, "channels": self.list_channels(group_id), "skipped": skipped}
+
+    async def _download_bot_media(
+        self,
+        channel: dict[str, Any],
+        message: dict[str, Any],
+        media: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        message_id = int(message["message_id"])
+        media_type = str(media["media_type"])
+        ext = _bot_media_extension(media)
+        channel_dir = (self.media_dir / str(channel["group_id"]) / _safe_path_piece(str(channel["channel_id"]))).resolve()
+        if not channel_dir.is_relative_to(self.media_dir):
+            raise TelegramMirrorError("Telegram 媒体缓存路径异常", "TG_INVALID_CACHE_PATH")
+        channel_dir.mkdir(parents=True, exist_ok=True)
+        filename = _safe_filename(f"TG_{channel['channel_title']}_{message_id}{ext}", f"TG_{message_id}{ext}")
+        target_path = (channel_dir / f"{message_id}_{uuid.uuid4().hex[:8]}{ext}").resolve()
+        if not target_path.is_relative_to(channel_dir):
+            raise TelegramMirrorError("Telegram 媒体缓存路径异常", "TG_INVALID_CACHE_PATH")
+
+        file_info = await self._bot_api_json("getFile", params={"file_id": media["file_id"]})
+        file_result = file_info.get("result")
+        if not isinstance(file_result, dict) or not file_result.get("file_path"):
+            return None
+        actual_size = _safe_int(file_result.get("file_size")) or _safe_int(media.get("file_size")) or 0
+        if actual_size > self._bot_max_file_bytes:
+            self._record_skipped_message(channel, message_id, media_type, actual_size, _bot_message_datetime(message))
+            return None
+
+        file_url = self._bot_file_url(str(file_result["file_path"]))
+        try:
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                async with client.stream("GET", file_url) as response:
+                    response.raise_for_status()
+                    size = 0
+                    with target_path.open("wb") as file:
+                        async for chunk in response.aiter_bytes():
+                            if not chunk:
+                                continue
+                            size += len(chunk)
+                            if size > self._bot_max_file_bytes:
+                                target_path.unlink(missing_ok=True)
+                                self._record_skipped_message(
+                                    channel,
+                                    message_id,
+                                    media_type,
+                                    size,
+                                    _bot_message_datetime(message),
+                                )
+                                return None
+                            file.write(chunk)
+        except httpx.HTTPError as exc:
+            target_path.unlink(missing_ok=True)
+            raise TelegramMirrorError("Telegram Bot API 媒体下载失败", "TG_BOT_DOWNLOAD_FAILED") from None
+
+        if not target_path.is_file() or target_path.stat().st_size <= 0:
+            target_path.unlink(missing_ok=True)
+            return None
+
+        file_size = target_path.stat().st_size
+        created_at = _bot_message_datetime(message)
+        fetched_at = _utc_now()
+        caption = _bot_message_caption(message)
+        message_url = _message_url(channel, message_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tg_messages (
+                    group_id, channel_id, message_id, media_type, file_path, file_size, status, created_at, fetched_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'downloaded', ?, ?)
+                """,
+                (
+                    str(channel["group_id"]),
+                    str(channel["channel_id"]),
+                    message_id,
+                    media_type,
+                    str(target_path),
+                    file_size,
+                    created_at,
+                    fetched_at,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id FROM tg_messages
+                WHERE group_id = ? AND channel_id = ? AND message_id = ?
+                """,
+                (str(channel["group_id"]), str(channel["channel_id"]), message_id),
+            ).fetchone()
+
+        return {
+            "id": int(row["id"]) if row else 0,
+            "channel_id": str(channel["channel_id"]),
+            "channel_title": str(channel["channel_title"]),
+            "message_id": message_id,
+            "media_type": media_type,
+            "file_path": str(target_path),
+            "filename": filename,
+            "file_size": file_size,
+            "caption": caption,
+            "message_url": message_url,
+            "created_at": created_at,
+        }
 
     async def _download_message_media(
         self,
@@ -274,6 +524,10 @@ class TelegramMirrorService:
     def _require_enabled(self) -> None:
         if not self.config.enabled:
             raise TelegramMirrorError("Telegram 镜像功能未启用", "TG_DISABLED")
+        if self._mode == "bot":
+            if not self.config.bot_token:
+                raise TelegramMirrorError("Telegram Bot Token 未配置", "TG_BOT_TOKEN_MISSING")
+            return
         if not self.config.api_id or not self.config.api_hash:
             raise TelegramMirrorError("Telegram API 凭据未配置", "TG_NOT_CONFIGURED")
         if not self.config.session_string and not self.config.session_path:
@@ -325,6 +579,124 @@ class TelegramMirrorService:
                 (str(group_id), str(channel_id), int(message_id)),
             ).fetchone()
         return row is not None
+
+    def _record_skipped_message(
+        self,
+        channel: dict[str, Any],
+        message_id: int,
+        media_type: str,
+        file_size: int,
+        created_at: str | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tg_messages (
+                    group_id, channel_id, message_id, media_type, file_path, file_size, status, created_at, fetched_at
+                )
+                VALUES (?, ?, ?, ?, '', ?, 'skipped', ?, ?)
+                """,
+                (
+                    str(channel["group_id"]),
+                    str(channel["channel_id"]),
+                    int(message_id),
+                    media_type,
+                    int(file_size),
+                    created_at,
+                    _utc_now(),
+                ),
+            )
+
+    def _list_all_channels(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM tg_channels
+                WHERE enabled = 1
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [_channel_row_to_dict(row) for row in rows]
+
+    def _matching_bot_channels(self, channels: list[dict[str, Any]], chat: dict[str, Any]) -> list[dict[str, Any]]:
+        chat_id = str(chat.get("id") or "")
+        username = str(chat.get("username") or "").lower()
+        matched: list[dict[str, Any]] = []
+        for channel in channels:
+            channel_ref = str(channel.get("channel_ref") or "").lower()
+            channel_id = str(channel.get("channel_id") or "")
+            if channel_id == chat_id or (username and channel_ref == username):
+                matched.append(channel)
+        return matched
+
+    def _update_bot_channel_from_chat(self, channel: dict[str, Any], chat: dict[str, Any]) -> dict[str, Any]:
+        chat_id = str(chat.get("id") or channel.get("channel_id") or "")
+        title = " ".join(str(chat.get("title") or channel.get("channel_title") or channel.get("channel_ref") or "").split())
+        username = str(chat.get("username") or channel.get("channel_ref") or "").strip() or str(channel.get("channel_ref"))
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE tg_channels
+                SET channel_id = ?, channel_title = ?, channel_ref = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (chat_id, title[:120] or username, username, now, int(channel["id"])),
+            )
+            row = conn.execute("SELECT * FROM tg_channels WHERE id = ?", (int(channel["id"]),)).fetchone()
+        return _channel_row_to_dict(row)
+
+    async def _bot_api_json(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self.config.bot_token:
+            raise TelegramMirrorError("Telegram Bot Token 未配置", "TG_BOT_TOKEN_MISSING")
+        url = f"https://api.telegram.org/bot{self.config.bot_token}/{method}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.get(url, params=params or {})
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPError:
+                raise TelegramMirrorError("Telegram Bot API 请求失败", "TG_BOT_API_FAILED") from None
+            except ValueError:
+                raise TelegramMirrorError("Telegram Bot API 返回结果无效", "TG_BOT_BAD_RESPONSE") from None
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise TelegramMirrorError("Telegram Bot API 返回失败", "TG_BOT_API_FAILED")
+        return payload
+
+    def _bot_file_url(self, file_path: str) -> str:
+        if not self.config.bot_token:
+            raise TelegramMirrorError("Telegram Bot Token 未配置", "TG_BOT_TOKEN_MISSING")
+        return f"https://api.telegram.org/file/bot{self.config.bot_token}/{file_path.lstrip('/')}"
+
+    @property
+    def _mode(self) -> str:
+        mode = (self.config.mode or "telethon").strip().lower()
+        return "bot" if mode in {"bot", "bot_api", "bot-api"} else "telethon"
+
+    @property
+    def _bot_max_file_bytes(self) -> int:
+        return min(max(1, self.config.max_file_bytes), BOT_API_MAX_DOWNLOAD_BYTES)
+
+    def _get_state_int(self, key: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM tg_state WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return 0
+        try:
+            return max(0, int(row["value"]))
+        except (TypeError, ValueError):
+            return 0
+
+    def _set_state(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tg_state (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (key, value),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -397,6 +769,45 @@ def _message_extension(message: Any, media_type: str) -> str:
     return ".jpg" if media_type == "image" else ".mp4"
 
 
+def _bot_message_media(message: dict[str, Any]) -> dict[str, Any] | None:
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        candidates = [photo for photo in photos if isinstance(photo, dict) and photo.get("file_id")]
+        if candidates:
+            photo = max(candidates, key=lambda item: int(item.get("file_size") or 0))
+            return {
+                "media_type": "image",
+                "file_id": str(photo["file_id"]),
+                "file_size": int(photo.get("file_size") or 0),
+                "mime_type": "image/jpeg",
+                "file_name": None,
+            }
+
+    video = message.get("video")
+    if isinstance(video, dict) and video.get("file_id"):
+        return {
+            "media_type": "video",
+            "file_id": str(video["file_id"]),
+            "file_size": int(video.get("file_size") or 0),
+            "mime_type": str(video.get("mime_type") or "video/mp4"),
+            "file_name": video.get("file_name"),
+        }
+    return None
+
+
+def _bot_media_extension(media: dict[str, Any]) -> str:
+    file_name = media.get("file_name")
+    if isinstance(file_name, str):
+        suffix = Path(file_name).suffix.lower()
+        if suffix and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", suffix):
+            return suffix
+    mime_type = str(media.get("mime_type") or "")
+    guessed = mimetypes.guess_extension(mime_type) if mime_type else None
+    if guessed and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", guessed):
+        return guessed.lower()
+    return ".jpg" if media.get("media_type") == "image" else ".mp4"
+
+
 def _message_datetime(message: Any) -> str | None:
     value = getattr(message, "date", None)
     if isinstance(value, datetime):
@@ -406,8 +817,23 @@ def _message_datetime(message: Any) -> str | None:
     return None
 
 
+def _bot_message_datetime(message: dict[str, Any]) -> str | None:
+    value = _safe_int(message.get("date"))
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+
 def _message_caption(message: Any) -> str | None:
     text = getattr(message, "raw_text", None) or getattr(message, "message", None)
+    if not isinstance(text, str):
+        return None
+    text = " ".join(text.split()).strip()
+    return text[:500] if text else None
+
+
+def _bot_message_caption(message: dict[str, Any]) -> str | None:
+    text = message.get("caption") or message.get("text")
     if not isinstance(text, str):
         return None
     text = " ".join(text.split()).strip()
@@ -419,6 +845,13 @@ def _message_url(channel: dict[str, Any], message_id: int) -> str | None:
     if TG_REF_PATTERN.fullmatch(ref):
         return f"https://t.me/{ref}/{message_id}"
     return None
+
+
+def _safe_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_path_piece(value: str) -> str:
