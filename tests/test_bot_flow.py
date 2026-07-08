@@ -876,8 +876,57 @@ async def test_group_admin_can_fetch_latest_tg_media(tmp_path: Path) -> None:
     )
 
     assert backend.tg_fetches == [("10001", 1)]
-    assert any("来自 TG：Example Channel" in message for _group, message in napcat.sent)
+    sent_text = "\n".join(message for _group, message in napcat.sent)
+    assert "hello" in sent_text
+    assert "来自 TG" not in sent_text
+    assert "类型：" not in sent_text
+    assert "大小：" not in sent_text
+    assert "https://t.me/example_channel/42" not in sent_text
     assert ("10001", f"IMAGE:{media_path.resolve()}") in napcat.sent
+
+
+@pytest.mark.asyncio
+async def test_tg_media_without_caption_sends_no_extra_description(tmp_path: Path) -> None:
+    media_path = tmp_path / "tg.jpg"
+    media_path.write_bytes(b"fake image")
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.tg_items = [
+        {
+            "id": 7,
+            "channel_id": "-100123456",
+            "channel_title": "Example Channel",
+            "message_id": 42,
+            "media_type": "image",
+            "file_path": str(media_path),
+            "filename": "tg.jpg",
+            "file_size": media_path.stat().st_size,
+            "caption": "",
+            "message_url": "https://t.me/example_channel/42",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " TG最新 1"}},
+            ],
+            role="admin",
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert [message for _group, message in napcat.sent] == [
+        "正在拉取 TG 最近 1 条图片/视频，稍等一下下(｀・ω・´)",
+        f"IMAGE:{media_path.resolve()}",
+        "TG 拉取完成：已发送 1 个，失败 0 个。",
+    ]
 
 
 @pytest.mark.asyncio

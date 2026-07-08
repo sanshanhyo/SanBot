@@ -1090,7 +1090,9 @@ async def _send_tg_media_item(group_id: str, item: dict[str, Any], napcat: NapCa
     file_path = Path(str(item.get("file_path") or "")).resolve()
     if not file_path.is_file():
         raise OSError(f"Telegram media file missing: {file_path}")
-    await _safe_send(napcat, group_id, _format_tg_media_caption(item))
+    caption = _format_tg_media_caption(item)
+    if caption:
+        await _safe_send(napcat, group_id, caption)
     media_type = str(item.get("media_type") or "")
     if media_type == "image":
         await napcat.send_group_image(group_id, str(file_path))
@@ -1109,14 +1111,7 @@ def _format_tg_media_caption(item: dict[str, Any]) -> str:
     caption = str(item.get("caption") or "").strip()
     if len(caption) > 160:
         caption = caption[:157] + "..."
-    return lang_text(
-        "tg_media_caption",
-        title=item.get("channel_title") or lang_text("unknown"),
-        media_type=_tg_media_type_label(str(item.get("media_type") or "")),
-        size=_format_bytes(int(item.get("file_size") or 0)),
-        caption=lang_text("tg_caption_suffix", caption=caption) if caption else "",
-        url=lang_text("tg_url_suffix", url=item.get("message_url")) if item.get("message_url") else "",
-    )
+    return lang_text("tg_media_caption", caption=caption) if caption else ""
 
 
 def _tg_media_type_label(media_type: str) -> str:
