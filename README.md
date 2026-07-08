@@ -558,6 +558,36 @@ Telegram 频道镜像默认关闭，需要先配置 `ENABLE_TG_MIRROR=true`、`T
 
 第一版只做手动拉取，不做定时自动同步。后端会记录已转发的 `channel_id + message_id`，避免重复转发；单个媒体超过 `TG_MAX_FILE_BYTES` 会跳过。请只绑定你有权访问和转发内容的频道。
 
+生成 Telethon session 推荐使用本地 session 文件，少碰容易转义出错的长字符串：
+
+```bash
+./.venv/bin/python tools/generate_tg_session.py
+```
+
+脚本会读取 `.env` 中的 `TG_API_ID` 和 `TG_API_HASH`，然后提示输入手机号、Telegram 登录验证码和两步验证密码。成功后默认生成：
+
+```text
+./data/telegram.session
+```
+
+对应配置：
+
+```env
+ENABLE_TG_MIRROR=true
+TG_API_ID=你的 api id
+TG_API_HASH=你的 api hash
+TG_SESSION_PATH=./data/telegram.session
+TG_SESSION_STRING=
+```
+
+如果必须使用字符串 session，可以执行：
+
+```bash
+./.venv/bin/python tools/generate_tg_session.py --string
+```
+
+然后只复制 `TG_SESSION_STRING_BEGIN` 和 `TG_SESSION_STRING_END` 中间那一整行到 `TG_SESSION_STRING`。不要把 `.session` 文件、session 字符串、API Hash 提交到 Git。
+
 输入了无法识别的内容时，机器人会回复：
 
 ```text
