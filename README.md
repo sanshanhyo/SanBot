@@ -33,7 +33,7 @@
 - PDF 过大时会自动拆分为多个分卷 PDF 上传，分卷文件名使用 `JM123456_part01-of03.pdf`，方便在 QQ 群文件列表里识别。
 - 上传失败会按配置重试，默认最多重试 5 次。
 - 后端会定期清理过期缓存；Bot 上传成功后也会清理本次上传缓存，避免 `data/` 目录无限增长。
-- Bot 群内文案集中放在 `i18n/zh_CN.json`，后续维护提示语不用翻代码。
+- Bot 群内文案集中放在 `i18n/zh_CN.json`，代码侧只引用 `bot/lang_keys.py` 中的键名常量。
 - Token、Cookie 和登录信息都通过本地配置提供，不写死在代码里。
 
 ## 环境要求
@@ -833,7 +833,8 @@ project/
 │  ├─ napcat_client.py
 │  ├─ message_parser.py
 │  ├─ backend_client.py
-│  └─ lang.py
+│  ├─ lang.py
+│  └─ lang_keys.py
 ├─ backend/
 │  ├─ main.py
 │  ├─ search_worker.py

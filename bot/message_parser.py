@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from .lang_keys import LangKey
+
 ALBUM_PATTERN = re.compile(r"(?i)\bJM\s*(\d{1,12})\b")
 JM_SEARCH_PATTERN = re.compile(r"(?i)^\s*JM\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
 AV_SEARCH_PATTERN = re.compile(r"(?i)^\s*(?:AV|DB)\s*(?:搜索|搜|查找)\s*(.*)$", re.S)
@@ -140,7 +142,7 @@ def extract_album_id(message_segments: Any) -> tuple[str | None, str | None]:
     if not matches:
         return None, None
     if len(matches) > 1:
-        return None, "multiple_album_numbers"
+        return None, LangKey.MULTIPLE_ALBUM_NUMBERS
     return matches[0], None
 
 
@@ -151,9 +153,9 @@ def extract_jm_search_query(message_segments: Any) -> tuple[str | None, str | No
         return None, None
     query = re.sub(r"\s+", " ", match.group(1)).strip()
     if not query:
-        return None, "jm_search_usage"
+        return None, LangKey.JM_SEARCH_USAGE
     if len(query) > 40:
-        return None, "search_query_too_long"
+        return None, LangKey.SEARCH_QUERY_TOO_LONG
     return query, None
 
 
@@ -164,9 +166,9 @@ def extract_av_search_query(message_segments: Any) -> tuple[str | None, str | No
         return None, None
     query = re.sub(r"\s+", " ", match.group(1)).strip()
     if not query:
-        return None, "av_search_usage"
+        return None, LangKey.AV_SEARCH_USAGE
     if len(query) > 60:
-        return None, "av_search_query_too_long"
+        return None, LangKey.AV_SEARCH_QUERY_TOO_LONG
     return query, None
 
 
@@ -177,9 +179,9 @@ def extract_actor_search_query(message_segments: Any) -> tuple[str | None, str |
         return None, None
     query = re.sub(r"\s+", " ", match.group(1)).strip()
     if not query:
-        return None, "actor_search_usage"
+        return None, LangKey.ACTOR_SEARCH_USAGE
     if len(query) > 60:
-        return None, "actor_search_query_too_long"
+        return None, LangKey.ACTOR_SEARCH_QUERY_TOO_LONG
     return query, None
 
 
@@ -206,7 +208,7 @@ def extract_tg_bind_ref(message_segments: Any) -> tuple[str | None, str | None]:
     match = TG_BIND_PATTERN.match(text)
     if match is None:
         if re.match(r"(?i)^\s*TG\s*(?:绑定|bind)\s*$", text):
-            return None, "tg_bind_usage"
+            return None, LangKey.TG_BIND_USAGE
         return None, None
     return match.group(1).strip(), None
 
@@ -221,7 +223,7 @@ def extract_tg_latest_limit(message_segments: Any) -> tuple[int | None, str | No
         return 5, None
     limit = int(raw_limit)
     if limit < 1 or limit > 10:
-        return None, "tg_latest_usage"
+        return None, LangKey.TG_LATEST_USAGE
     return limit, None
 
 

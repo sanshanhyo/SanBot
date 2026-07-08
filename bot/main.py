@@ -26,6 +26,7 @@ from .message_parser import (
 )
 from .napcat_client import NapCatAPIError, NapCatClient
 from .lang import text as lang_text, words as lang_words
+from .lang_keys import LangKey
 
 logger = logging.getLogger(__name__)
 
@@ -371,15 +372,15 @@ def _safe_filename(name: str, fallback: str, max_bytes: int = MAX_FILENAME_BYTES
 
 
 def _confirm_words() -> set[str]:
-    return lang_words("confirm_words", DEFAULT_CONFIRM_WORDS)
+    return lang_words(LangKey.CONFIRM_WORDS, DEFAULT_CONFIRM_WORDS)
 
 
 def _cancel_words() -> set[str]:
-    return lang_words("cancel_words", DEFAULT_CANCEL_WORDS)
+    return lang_words(LangKey.CANCEL_WORDS, DEFAULT_CANCEL_WORDS)
 
 
 def _active_cancel_words() -> set[str]:
-    return lang_words("active_cancel_words", DEFAULT_ACTIVE_CANCEL_WORDS)
+    return lang_words(LangKey.ACTIVE_CANCEL_WORDS, DEFAULT_ACTIVE_CANCEL_WORDS)
 
 
 def _parse_admin_command(event: dict[str, Any], bot_qq_id: str) -> AdminCommand | None:
@@ -627,15 +628,15 @@ async def handle_group_message(
     )
 
     if parse_result.action == ParseAction.USAGE:
-        await _safe_send(napcat, group_id, lang_text("usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.USAGE))
         return
 
     if parse_result.action == ParseAction.UNKNOWN:
-        await _safe_send(napcat, group_id, lang_text("unknown_command"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.UNKNOWN_COMMAND))
         return
 
     if parse_result.action == ParseAction.ERROR:
-        await _safe_send(napcat, group_id, lang_text(parse_result.error_key or "usage"))
+        await _safe_send(napcat, group_id, lang_text(parse_result.error_key or LangKey.USAGE))
         return
 
     if parse_result.action == ParseAction.HOME:
@@ -643,11 +644,11 @@ async def handle_group_message(
         return
 
     if parse_result.action == ParseAction.HELP:
-        await _safe_send(napcat, group_id, lang_text("help_message"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.HELP_MESSAGE))
         return
 
     if parse_result.action == ParseAction.FEATURES:
-        await _safe_send(napcat, group_id, lang_text("features_message"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.FEATURES_MESSAGE))
         return
 
     if parse_result.action == ParseAction.HISTORY:
@@ -656,14 +657,14 @@ async def handle_group_message(
 
     if parse_result.action == ParseAction.GROUP_HISTORY:
         if not _can_run_admin_command(event, user_id, settings):
-            await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
+            await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_PERMISSION_DENIED))
             return
         await _send_group_history(group_id, napcat, backend)
         return
 
     if parse_result.action in {ParseAction.TG_BIND, ParseAction.TG_LIST, ParseAction.TG_LATEST}:
         if not _can_run_admin_command(event, user_id, settings):
-            await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
+            await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_PERMISSION_DENIED))
             return
         if parse_result.action == ParseAction.TG_BIND:
             await _handle_tg_bind_command(parse_result.tg_channel_ref or "", group_id, napcat, backend)
@@ -684,7 +685,7 @@ async def handle_group_message(
     }:
         remaining = _command_cooldown_remaining(group_id, user_id, settings, state, now)
         if remaining > 0:
-            await _safe_send(napcat, group_id, lang_text("command_cooldown", seconds=math.ceil(remaining)))
+            await _safe_send(napcat, group_id, lang_text(LangKey.COMMAND_COOLDOWN, seconds=math.ceil(remaining)))
             return
         _mark_command_cooldown(group_id, user_id, settings, state, now)
 
@@ -754,23 +755,23 @@ async def handle_group_message(
 
     album_id = parse_result.album_id
     if album_id is None:
-        await _safe_send(napcat, group_id, lang_text("usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.USAGE))
         return
 
-    await _safe_send(napcat, group_id, lang_text("received_fetching", album_id=album_id))
+    await _safe_send(napcat, group_id, lang_text(LangKey.RECEIVED_FETCHING, album_id=album_id))
 
     try:
         active = await backend.get_active_job(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not query active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, lang_text("backend_unavailable", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.BACKEND_UNAVAILABLE, error_code=exc.error_code))
         return
 
     if active is not None:
         await _safe_send(
             napcat,
             group_id,
-            lang_text("active_job_exists", album_id=active.get("album_id")),
+            lang_text(LangKey.ACTIVE_JOB_EXISTS, album_id=active.get("album_id")),
         )
         return
 
@@ -794,10 +795,10 @@ async def _handle_admin_command(
 
     if command.name == "cleanup":
         if not _is_manager(user_id, settings):
-            await _safe_send(napcat, group_id, lang_text("admin_manager_required"))
+            await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_MANAGER_REQUIRED))
             return True
     elif not _can_run_admin_command(event, user_id, settings):
-        await _safe_send(napcat, group_id, lang_text("admin_permission_denied"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_PERMISSION_DENIED))
         return True
 
     if command.name == "status":
@@ -823,7 +824,7 @@ async def _send_admin_status(
         payload = await backend.get_admin_status()
     except BackendError as exc:
         logger.exception("Could not fetch admin status.")
-        await _safe_send(napcat, group_id, lang_text("admin_status_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_STATUS_FAILED, error_code=exc.error_code))
         return
 
     await _safe_send(napcat, group_id, _format_admin_status(payload, len(state.uploading_jobs)))
@@ -839,7 +840,7 @@ async def _send_admin_queue(
         payload = await backend.get_admin_queue()
     except BackendError as exc:
         logger.exception("Could not fetch admin queue.")
-        await _safe_send(napcat, group_id, lang_text("admin_queue_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_QUEUE_FAILED, error_code=exc.error_code))
         return
 
     jobs = payload.get("jobs")
@@ -856,7 +857,7 @@ async def _send_admin_audit(
         payload = await backend.get_admin_audit(group_id=group_id, limit=10)
     except BackendError as exc:
         logger.exception("Could not fetch admin audit log.")
-        await _safe_send(napcat, group_id, lang_text("admin_audit_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_AUDIT_FAILED, error_code=exc.error_code))
         return
 
     events = payload.get("events")
@@ -865,8 +866,7 @@ async def _send_admin_audit(
 
 
 def _format_home_message(settings: BotSettings) -> str:
-    return lang_text(
-        "bot_home",
+    return lang_text(LangKey.BOT_HOME,
         bot_name=settings.bot_display_name,
         manager_name=settings.manager_name,
         manager_qq=settings.manager_qq,
@@ -883,7 +883,7 @@ async def _send_user_history(
         payload = await backend.get_user_history(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not fetch user history.")
-        await _safe_send(napcat, group_id, lang_text("history_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.HISTORY_FAILED, error_code=exc.error_code))
         return
 
     jobs = payload.get("jobs") if isinstance(payload, dict) else []
@@ -900,7 +900,7 @@ async def _send_group_history(
         payload = await backend.get_group_history(group_id)
     except BackendError as exc:
         logger.exception("Could not fetch group history.")
-        await _safe_send(napcat, group_id, lang_text("history_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.HISTORY_FAILED, error_code=exc.error_code))
         return
 
     jobs = payload.get("jobs") if isinstance(payload, dict) else []
@@ -915,14 +915,14 @@ async def _run_admin_cleanup(
     backend: BackendClient,
 ) -> None:
     if state.uploading_jobs:
-        await _safe_send(napcat, group_id, lang_text("admin_cleanup_busy", count=len(state.uploading_jobs)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_CLEANUP_BUSY, count=len(state.uploading_jobs)))
         return
 
     try:
         payload = await backend.cleanup_cache()
     except BackendError as exc:
         logger.exception("Could not cleanup cache.")
-        await _safe_send(napcat, group_id, lang_text("admin_cleanup_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_CLEANUP_FAILED, error=exc, error_code=exc.error_code))
         return
 
     stats = payload.get("stats") if isinstance(payload, dict) else {}
@@ -930,8 +930,7 @@ async def _run_admin_cleanup(
     await _safe_send(
         napcat,
         group_id,
-        lang_text(
-            "admin_cleanup_done",
+        lang_text(LangKey.ADMIN_CLEANUP_DONE,
             freed=_format_bytes(int(payload.get("freed_bytes") or 0)),
             job_dirs=int(stats.get("job_dirs") or 0),
             bot_downloads=int(stats.get("bot_downloads") or 0),
@@ -949,7 +948,7 @@ async def _run_admin_cancel(
 ) -> None:
     target = _normalize_cancel_target(target)
     if not target:
-        await _safe_send(napcat, group_id, lang_text("admin_cancel_usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_CANCEL_USAGE))
         return
 
     uploading_job = _find_uploading_job(target, state)
@@ -958,7 +957,7 @@ async def _run_admin_cancel(
         await _safe_send(
             napcat,
             group_id,
-            lang_text("admin_cancel_uploading", job_id=_short_job_id(uploading_job.job_id), album_id=uploading_job.album_id),
+            lang_text(LangKey.ADMIN_CANCEL_UPLOADING, job_id=_short_job_id(uploading_job.job_id), album_id=uploading_job.album_id),
         )
         return
 
@@ -966,7 +965,7 @@ async def _run_admin_cancel(
         payload = await backend.admin_cancel_job(target)
     except BackendError as exc:
         logger.exception("Could not cancel admin target %s.", target)
-        await _safe_send(napcat, group_id, lang_text("admin_cancel_failed", target=target, error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ADMIN_CANCEL_FAILED, target=target, error=exc, error_code=exc.error_code))
         return
 
     job = payload.get("job") if isinstance(payload, dict) else None
@@ -974,10 +973,9 @@ async def _run_admin_cancel(
         await _safe_send(
             napcat,
             group_id,
-            lang_text(
-                "admin_cancel_failed",
+            lang_text(LangKey.ADMIN_CANCEL_FAILED,
                 target=target,
-                error=lang_text("bad_backend_response"),
+                error=lang_text(LangKey.BAD_BACKEND_RESPONSE),
                 error_code="BAD_RESPONSE",
             ),
         )
@@ -986,8 +984,7 @@ async def _run_admin_cancel(
     await _safe_send(
         napcat,
         group_id,
-        lang_text(
-            "admin_cancel_done",
+        lang_text(LangKey.ADMIN_CANCEL_DONE,
             job_id=_short_job_id(str(job.get("job_id") or target)),
             album_id=job.get("album_id"),
             status=_status_label(str(job.get("status") or "")),
@@ -1005,13 +1002,12 @@ async def _handle_tg_bind_command(
         channel = await backend.bind_tg_channel(group_id, channel_ref)
     except BackendError as exc:
         logger.exception("Could not bind Telegram channel %s.", channel_ref)
-        await _safe_send(napcat, group_id, lang_text("tg_bind_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.TG_BIND_FAILED, error=exc, error_code=exc.error_code))
         return
     await _safe_send(
         napcat,
         group_id,
-        lang_text(
-            "tg_bind_done",
+        lang_text(LangKey.TG_BIND_DONE,
             title=channel.get("channel_title") or channel_ref,
             ref=channel.get("channel_ref") or channel_ref,
         ),
@@ -1023,7 +1019,7 @@ async def _handle_tg_list_command(group_id: str, napcat: NapCatClient, backend: 
         payload = await backend.list_tg_channels(group_id)
     except BackendError as exc:
         logger.exception("Could not list Telegram channels.")
-        await _safe_send(napcat, group_id, lang_text("tg_list_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.TG_LIST_FAILED, error=exc, error_code=exc.error_code))
         return
     channels = payload.get("channels") if isinstance(payload, dict) else []
     safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
@@ -1036,12 +1032,12 @@ async def _handle_tg_latest_command(
     napcat: NapCatClient,
     backend: BackendClient,
 ) -> None:
-    await _safe_send(napcat, group_id, lang_text("tg_fetching", limit=limit))
+    await _safe_send(napcat, group_id, lang_text(LangKey.TG_FETCHING, limit=limit))
     try:
         payload = await backend.fetch_tg_latest(group_id, limit)
     except BackendError as exc:
         logger.exception("Could not fetch Telegram media.")
-        await _safe_send(napcat, group_id, lang_text("tg_fetch_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.TG_FETCH_FAILED, error=exc, error_code=exc.error_code))
         return
 
     channels = payload.get("channels") if isinstance(payload, dict) else []
@@ -1049,10 +1045,10 @@ async def _handle_tg_latest_command(
     safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
     safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
     if not safe_channels:
-        await _safe_send(napcat, group_id, lang_text("tg_no_channels"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.TG_NO_CHANNELS))
         return
     if not safe_items:
-        await _safe_send(napcat, group_id, lang_text("tg_no_new_media"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.TG_NO_NEW_MEDIA))
         return
 
     sent = 0
@@ -1067,20 +1063,19 @@ async def _handle_tg_latest_command(
         except OSError:
             failed += 1
             logger.exception("Telegram media file is not readable: %s", item.get("file_path"))
-    await _safe_send(napcat, group_id, lang_text("tg_fetch_done", sent=sent, failed=failed))
+    await _safe_send(napcat, group_id, lang_text(LangKey.TG_FETCH_DONE, sent=sent, failed=failed))
 
 
 def _format_tg_channel_list(channels: list[dict[str, Any]]) -> str:
     if not channels:
-        return lang_text("tg_list_empty")
-    lines = [lang_text("tg_list_header")]
+        return lang_text(LangKey.TG_LIST_EMPTY)
+    lines = [lang_text(LangKey.TG_LIST_HEADER)]
     for index, channel in enumerate(channels, start=1):
         lines.append(
-            lang_text(
-                "tg_list_line",
+            lang_text(LangKey.TG_LIST_LINE,
                 index=index,
-                title=channel.get("channel_title") or channel.get("channel_ref") or lang_text("unknown"),
-                ref=channel.get("channel_ref") or lang_text("unknown"),
+                title=channel.get("channel_title") or channel.get("channel_ref") or lang_text(LangKey.UNKNOWN),
+                ref=channel.get("channel_ref") or lang_text(LangKey.UNKNOWN),
             )
         )
     return "\n".join(lines)
@@ -1111,15 +1106,7 @@ def _format_tg_media_caption(item: dict[str, Any]) -> str:
     caption = str(item.get("caption") or "").strip()
     if len(caption) > 160:
         caption = caption[:157] + "..."
-    return lang_text("tg_media_caption", caption=caption) if caption else ""
-
-
-def _tg_media_type_label(media_type: str) -> str:
-    if media_type == "image":
-        return lang_text("tg_media_image")
-    if media_type == "video":
-        return lang_text("tg_media_video")
-    return lang_text("unknown")
+    return lang_text(LangKey.TG_MEDIA_CAPTION, caption=caption) if caption else ""
 
 
 def _command_cooldown_remaining(
@@ -1172,7 +1159,7 @@ async def _handle_pending_confirmation(
 
     if text in _cancel_words():
         state.pending_downloads.pop(key, None)
-        await _safe_send(napcat, group_id, lang_text("cancelled_pending", album_id=pending.album_id))
+        await _safe_send(napcat, group_id, lang_text(LangKey.CANCELLED_PENDING, album_id=pending.album_id))
         return True
 
     if text not in _confirm_words():
@@ -1183,8 +1170,7 @@ async def _handle_pending_confirmation(
         await _safe_send(
             napcat,
             group_id,
-            lang_text(
-                "large_album_warning",
+            lang_text(LangKey.LARGE_ALBUM_WARNING,
                 album_id=pending.album_id,
                 page_count=pending.page_count,
                 limit=settings.large_album_warning_pages,
@@ -1203,7 +1189,7 @@ async def _handle_pending_confirmation(
         spawn_task,
         state=state,
         page_count=pending.page_count,
-        extra_message=lang_text("estimated_time_line", estimated_text=pending.estimated_text),
+        extra_message=lang_text(LangKey.ESTIMATED_TIME_LINE, estimated_text=pending.estimated_text),
     )
     return True
 
@@ -1228,7 +1214,7 @@ async def _handle_pending_search_selection(
 
     if text in _cancel_words():
         state.pending_searches.pop(key, None)
-        await _safe_send(napcat, group_id, lang_text("search_cancelled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_CANCELLED))
         return True
 
     if not text.isdigit():
@@ -1236,7 +1222,7 @@ async def _handle_pending_search_selection(
 
     index = int(text)
     if index < 1 or index > len(pending.results):
-        await _safe_send(napcat, group_id, lang_text("search_invalid_choice", count=len(pending.results)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_INVALID_CHOICE, count=len(pending.results)))
         return True
 
     selected = pending.results[index - 1]
@@ -1246,7 +1232,7 @@ async def _handle_pending_search_selection(
         await _safe_send(
             napcat,
             group_id,
-            lang_text("search_failed", error=lang_text("bad_search_result"), error_code="SEARCH_BAD_RESULT"),
+            lang_text(LangKey.SEARCH_FAILED, error=lang_text(LangKey.BAD_SEARCH_RESULT), error_code="SEARCH_BAD_RESULT"),
         )
         return True
 
@@ -1254,7 +1240,7 @@ async def _handle_pending_search_selection(
         active = await backend.get_active_job(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not query active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, lang_text("backend_unavailable", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.BACKEND_UNAVAILABLE, error_code=exc.error_code))
         return True
 
     if active is not None:
@@ -1262,12 +1248,12 @@ async def _handle_pending_search_selection(
         await _safe_send(
             napcat,
             group_id,
-            lang_text("active_job_exists", album_id=active.get("album_id")),
+            lang_text(LangKey.ACTIVE_JOB_EXISTS, album_id=active.get("album_id")),
         )
         return True
 
     state.pending_searches.pop(key, None)
-    await _safe_send(napcat, group_id, lang_text("search_selected", album_id=album_id))
+    await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_SELECTED, album_id=album_id))
     await _send_album_preview(album_id, group_id, user_id, settings, state, napcat, backend)
     return True
 
@@ -1282,26 +1268,26 @@ async def _handle_search_command(
     backend: BackendClient,
 ) -> None:
     if not settings.enable_search:
-        await _safe_send(napcat, group_id, lang_text("search_disabled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_DISABLED))
         return
 
     query = re.sub(r"\s+", " ", query).strip()
     if not query:
-        await _safe_send(napcat, group_id, lang_text("search_usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_USAGE))
         return
 
-    await _safe_send(napcat, group_id, lang_text("searching", query=query))
+    await _safe_send(napcat, group_id, lang_text(LangKey.SEARCHING, query=query))
     try:
         payload = await backend.search_albums(query, page=1, limit=settings.search_result_limit)
     except BackendError as exc:
         logger.exception("Could not search albums for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, lang_text("search_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_FAILED, error=exc, error_code=exc.error_code))
         return
 
     results = payload.get("results")
     if not isinstance(results, list) or not results:
         state.pending_searches.pop((group_id, user_id), None)
-        await _safe_send(napcat, group_id, lang_text("search_empty", query=query))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_EMPTY, query=query))
         return
 
     safe_results = [
@@ -1311,7 +1297,7 @@ async def _handle_search_command(
     ]
     if not safe_results:
         state.pending_searches.pop((group_id, user_id), None)
-        await _safe_send(napcat, group_id, lang_text("search_empty", query=query))
+        await _safe_send(napcat, group_id, lang_text(LangKey.SEARCH_EMPTY, query=query))
         return
 
     state.pending_downloads.pop((group_id, user_id), None)
@@ -1330,17 +1316,17 @@ async def _handle_ranking_command(
     napcat: NapCatClient,
     backend: BackendClient,
 ) -> None:
-    await _safe_send(napcat, group_id, lang_text("ranking_fetching", period=_ranking_period_label(period)))
+    await _safe_send(napcat, group_id, lang_text(LangKey.RANKING_FETCHING, period=_ranking_period_label(period)))
     try:
         payload = await backend.get_ranking(period, page=1, limit=settings.ranking_result_limit)
     except BackendError as exc:
         logger.exception("Could not fetch %s ranking for group=%s.", period, group_id)
-        await _safe_send(napcat, group_id, lang_text("ranking_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.RANKING_FAILED, error=exc, error_code=exc.error_code))
         return
 
     results = payload.get("results")
     if not isinstance(results, list) or not results:
-        await _safe_send(napcat, group_id, lang_text("ranking_empty", period=_ranking_period_label(period)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.RANKING_EMPTY, period=_ranking_period_label(period)))
         return
 
     safe_results = [
@@ -1349,7 +1335,7 @@ async def _handle_ranking_command(
         if isinstance(result, dict) and str(result.get("album_id") or "").isdigit()
     ]
     if not safe_results:
-        await _safe_send(napcat, group_id, lang_text("ranking_empty", period=_ranking_period_label(period)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.RANKING_EMPTY, period=_ranking_period_label(period)))
         return
 
     await _safe_send(napcat, group_id, _format_ranking_results(payload, safe_results))
@@ -1363,26 +1349,26 @@ async def _handle_av_search_command(
     backend: BackendClient,
 ) -> None:
     if not settings.enable_javlibrary:
-        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_DISABLED))
         return
 
     query = re.sub(r"\s+", " ", query).strip()
     if not query:
-        await _safe_send(napcat, group_id, lang_text("av_search_usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.AV_SEARCH_USAGE))
         return
 
-    await _safe_send(napcat, group_id, lang_text("av_searching", query=query))
+    await _safe_send(napcat, group_id, lang_text(LangKey.AV_SEARCHING, query=query))
     try:
         payload = await backend.search_jav_videos(query, page=1, limit=settings.search_result_limit)
     except BackendError as exc:
         logger.exception("Could not search JAV metadata for group=%s.", group_id)
-        await _safe_send(napcat, group_id, lang_text("av_search_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.AV_SEARCH_FAILED, error=exc, error_code=exc.error_code))
         return
 
     results = payload.get("results")
     safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
     if not safe_results:
-        await _safe_send(napcat, group_id, lang_text("av_search_empty", query=query))
+        await _safe_send(napcat, group_id, lang_text(LangKey.AV_SEARCH_EMPTY, query=query))
         return
     await _safe_send(napcat, group_id, _format_jav_search_results(query, safe_results))
 
@@ -1395,26 +1381,26 @@ async def _handle_actor_search_command(
     backend: BackendClient,
 ) -> None:
     if not settings.enable_javlibrary:
-        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_DISABLED))
         return
 
     query = re.sub(r"\s+", " ", query).strip()
     if not query:
-        await _safe_send(napcat, group_id, lang_text("actor_search_usage"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ACTOR_SEARCH_USAGE))
         return
 
-    await _safe_send(napcat, group_id, lang_text("actor_searching", query=query))
+    await _safe_send(napcat, group_id, lang_text(LangKey.ACTOR_SEARCHING, query=query))
     try:
         payload = await backend.search_jav_actors(query, page=1, limit=settings.search_result_limit)
     except BackendError as exc:
         logger.exception("Could not search JAV actor metadata for group=%s.", group_id)
-        await _safe_send(napcat, group_id, lang_text("actor_search_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ACTOR_SEARCH_FAILED, error=exc, error_code=exc.error_code))
         return
 
     results = payload.get("results")
     safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
     if not safe_results:
-        await _safe_send(napcat, group_id, lang_text("actor_search_empty", query=query))
+        await _safe_send(napcat, group_id, lang_text(LangKey.ACTOR_SEARCH_EMPTY, query=query))
         return
     await _safe_send(napcat, group_id, _format_jav_actor_search_results(query, safe_results))
 
@@ -1427,21 +1413,21 @@ async def _handle_javdb_ranking_command(
     backend: BackendClient,
 ) -> None:
     if not settings.enable_javlibrary:
-        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_DISABLED))
         return
 
-    await _safe_send(napcat, group_id, lang_text("db_ranking_fetching", period=_ranking_period_label(period)))
+    await _safe_send(napcat, group_id, lang_text(LangKey.DB_RANKING_FETCHING, period=_ranking_period_label(period)))
     try:
         payload = await backend.get_javdb_ranking(period, page=1, limit=settings.ranking_result_limit)
     except BackendError as exc:
         logger.exception("Could not fetch JavDB %s ranking for group=%s.", period, group_id)
-        await _safe_send(napcat, group_id, lang_text("db_ranking_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.DB_RANKING_FAILED, error=exc, error_code=exc.error_code))
         return
 
     results = payload.get("results")
     safe_results = [result for result in results if isinstance(result, dict)] if isinstance(results, list) else []
     if not safe_results:
-        await _safe_send(napcat, group_id, lang_text("db_ranking_empty", period=_ranking_period_label(period)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.DB_RANKING_EMPTY, period=_ranking_period_label(period)))
         return
     await _safe_send(napcat, group_id, _format_javdb_ranking_results(payload, safe_results))
 
@@ -1456,15 +1442,15 @@ async def _handle_jav_command(
     backend: BackendClient,
 ) -> None:
     if not settings.enable_javlibrary:
-        await _safe_send(napcat, group_id, lang_text("jav_disabled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_DISABLED))
         return
 
-    await _safe_send(napcat, group_id, lang_text("jav_fetching", code=code.upper()))
+    await _safe_send(napcat, group_id, lang_text(LangKey.JAV_FETCHING, code=code.upper()))
     try:
         payload = await backend.get_jav_video(code)
     except BackendError as exc:
         logger.exception("Could not fetch JAV metadata for %s.", code)
-        await _safe_send(napcat, group_id, lang_text("jav_failed", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_FAILED, error=exc, error_code=exc.error_code))
         return
 
     await _safe_send(napcat, group_id, _format_jav_video(payload))
@@ -1503,14 +1489,14 @@ async def _handle_pending_jav_action(
         return False
     if text in _cancel_words():
         state.pending_jav_actions.pop((group_id, user_id), None)
-        await _safe_send(napcat, group_id, lang_text("jav_action_cancelled"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_CANCELLED))
         return True
 
     action = _jav_action_from_text(text)
     if action is None:
         return False
     if action not in pending.actions:
-        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
         return True
 
     if action == "resource":
@@ -1561,16 +1547,16 @@ async def _available_jav_actions(
 
 
 def _format_jav_action_menu(actions: set[str]) -> str:
-    lines = [lang_text("jav_action_menu_header")]
+    lines = [lang_text(LangKey.JAV_ACTION_MENU_HEADER)]
     if "trailer" in actions:
-        lines.append(lang_text("jav_action_menu_trailer"))
+        lines.append(lang_text(LangKey.JAV_ACTION_MENU_TRAILER))
     if "stills" in actions:
-        lines.append(lang_text("jav_action_menu_stills"))
+        lines.append(lang_text(LangKey.JAV_ACTION_MENU_STILLS))
     if "resource" in actions:
-        lines.append(lang_text("jav_action_menu_resource"))
+        lines.append(lang_text(LangKey.JAV_ACTION_MENU_RESOURCE))
     if "stream" in actions:
-        lines.append(lang_text("jav_action_menu_stream"))
-    lines.append(lang_text("jav_action_menu_footer"))
+        lines.append(lang_text(LangKey.JAV_ACTION_MENU_STREAM))
+    lines.append(lang_text(LangKey.JAV_ACTION_MENU_FOOTER))
     return "\n".join(lines)
 
 
@@ -1589,9 +1575,9 @@ def _jav_action_from_text(text: str) -> str | None:
 async def _send_jav_resource_page(payload: dict[str, Any], group_id: str, napcat: NapCatClient) -> None:
     url = _jav_resource_page_url(payload)
     if not url:
-        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
         return
-    await _safe_send(napcat, group_id, lang_text("jav_resource_page", url=url))
+    await _safe_send(napcat, group_id, lang_text(LangKey.JAV_RESOURCE_PAGE, url=url))
 
 
 async def _send_jav_trailer(
@@ -1614,14 +1600,14 @@ async def _send_jav_trailer(
 
     trailer_page_url = _payload_str(payload, "trailer_page_url")
     if trailer_page_url:
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_page", url=trailer_page_url))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_PAGE, url=trailer_page_url))
         return
 
     if payload.get("trailer_requires_login"):
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_requires_login"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_REQUIRES_LOGIN))
         return
 
-    await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+    await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
 
 
 async def _send_jav_trailer_as_local_mp4(
@@ -1637,19 +1623,19 @@ async def _send_jav_trailer_as_local_mp4(
     dest_dir = (cache_root / job_id).resolve()
     if not dest_dir.is_relative_to(cache_root):
         logger.warning("Skip JAV trailer outside cache dir: %s", dest_dir)
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code="INVALID_CACHE_PATH"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_FAILED, error_code="INVALID_CACHE_PATH"))
         return
 
-    await _safe_send(napcat, group_id, lang_text("jav_trailer_preparing_mp4"))
+    await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_PREPARING_MP4))
     try:
         mp4_path = await _prepare_jav_trailer_mp4(payload, trailer_url, dest_dir, settings)
         await napcat.send_group_video(group_id, str(mp4_path.resolve()))
     except NapCatAPIError:
         logger.exception("Could not send JAV trailer MP4 for %s.", code)
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code="NAPCAT_VIDEO_UPLOAD_FAILED"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_FAILED, error_code="NAPCAT_VIDEO_UPLOAD_FAILED"))
     except JavTrailerError as exc:
         logger.exception("Could not prepare JAV trailer MP4 for %s.", code)
-        await _safe_send(napcat, group_id, lang_text("jav_trailer_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_TRAILER_FAILED, error_code=exc.error_code))
     finally:
         await asyncio.to_thread(_cleanup_bot_download_dir, dest_dir, cache_root)
 
@@ -2188,9 +2174,9 @@ async def _send_jav_stills(
     all_urls = _payload_list(payload, "preview_image_urls")
     preview_urls = all_urls[: settings.jav_stills_max_count]
     if not preview_urls:
-        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
         return
-    await _safe_send(napcat, group_id, lang_text("jav_stills_sending", count=len(preview_urls)))
+    await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_SENDING, count=len(preview_urls)))
     sent_count = 0
     for url in preview_urls:
         try:
@@ -2199,7 +2185,7 @@ async def _send_jav_stills(
         except NapCatAPIError:
             logger.warning("Could not send JAV still image %s.", url, exc_info=True)
     if sent_count == 0:
-        await _safe_send(napcat, group_id, lang_text("jav_stills_failed"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_FAILED))
     if settings.enable_jav_stills_pdf:
         await _send_jav_stills_pdf(payload, all_urls, group_id, settings, napcat)
 
@@ -2221,21 +2207,20 @@ async def _send_jav_stills_pdf(
     dest_dir = (cache_root / job_id).resolve()
     if not dest_dir.is_relative_to(cache_root):
         logger.warning("Skip JAV stills PDF outside cache dir: %s", dest_dir)
-        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="INVALID_CACHE_PATH"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_PDF_FAILED, error_code="INVALID_CACHE_PATH"))
         return
 
     if len(urls) > len(selected_urls):
         await _safe_send(
             napcat,
             group_id,
-            lang_text(
-                "jav_stills_pdf_preparing_limited",
+            lang_text(LangKey.JAV_STILLS_PDF_PREPARING_LIMITED,
                 count=len(selected_urls),
                 total=len(urls),
             ),
         )
     else:
-        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_preparing", count=len(selected_urls)))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_PDF_PREPARING, count=len(selected_urls)))
 
     try:
         pdf_path, upload_filename, image_count = await _build_jav_stills_pdf(
@@ -2256,7 +2241,7 @@ async def _send_jav_stills_pdf(
             await _safe_send(
                 napcat,
                 group_id,
-                lang_text("jav_stills_pdf_split", count=len(upload_files)),
+                lang_text(LangKey.JAV_STILLS_PDF_SPLIT, count=len(upload_files)),
             )
 
         for upload_path, upload_name in upload_files:
@@ -2268,19 +2253,19 @@ async def _send_jav_stills_pdf(
                 job_id,
                 settings.upload_retries,
             ):
-                await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="NAPCAT_UPLOAD_FAILED"))
+                await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_PDF_FAILED, error_code="NAPCAT_UPLOAD_FAILED"))
                 return
         await _safe_send(
             napcat,
             group_id,
-            lang_text("jav_stills_pdf_completed", count=image_count, filename=upload_filename),
+            lang_text(LangKey.JAV_STILLS_PDF_COMPLETED, count=image_count, filename=upload_filename),
         )
     except UploadPreparationError:
         logger.exception("Could not prepare JAV stills PDF upload for %s.", code)
-        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="PDF_UPLOAD_PREPARE_FAILED"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_PDF_FAILED, error_code="PDF_UPLOAD_PREPARE_FAILED"))
     except JavStillsPdfError:
         logger.exception("Could not build JAV stills PDF for %s.", code)
-        await _safe_send(napcat, group_id, lang_text("jav_stills_pdf_failed", error_code="JAV_STILLS_PDF_FAILED"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_STILLS_PDF_FAILED, error_code="JAV_STILLS_PDF_FAILED"))
     finally:
         await asyncio.to_thread(_cleanup_bot_download_dir, dest_dir, cache_root)
 
@@ -2528,10 +2513,10 @@ async def _send_missav_link(
 ) -> None:
     code = str(payload.get("code") or "").strip().upper()
     if not code:
-        await _safe_send(napcat, group_id, lang_text("jav_action_unavailable"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JAV_ACTION_UNAVAILABLE))
         return
     url = f"{settings.missav_base_url}/{quote(code)}"
-    await _safe_send(napcat, group_id, lang_text("missav_link", code=code, url=url))
+    await _safe_send(napcat, group_id, lang_text(LangKey.MISSAV_LINK, code=code, url=url))
 
 
 async def _is_missav_allowed(group_id: str, settings: BotSettings, napcat: NapCatClient) -> bool:
@@ -2597,14 +2582,14 @@ async def _handle_active_cancel(
         cancelled = await backend.cancel_active_job(group_id, user_id)
     except BackendError as exc:
         logger.exception("Could not cancel active job for group=%s user=%s.", group_id, user_id)
-        await _safe_send(napcat, group_id, lang_text("cancel_failed", error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.CANCEL_FAILED, error_code=exc.error_code))
         return True
 
     if cancelled is None:
-        await _safe_send(napcat, group_id, lang_text("no_active_job"))
+        await _safe_send(napcat, group_id, lang_text(LangKey.NO_ACTIVE_JOB))
         return True
 
-    await _safe_send(napcat, group_id, lang_text("cancelled_active", album_id=cancelled.get("album_id")))
+    await _safe_send(napcat, group_id, lang_text(LangKey.CANCELLED_ACTIVE, album_id=cancelled.get("album_id")))
     return True
 
 
@@ -2624,30 +2609,29 @@ async def _send_album_preview(
         await _safe_send(
             napcat,
             group_id,
-            lang_text("preview_failed", album_id=album_id, error=exc, error_code=exc.error_code),
+            lang_text(LangKey.PREVIEW_FAILED, album_id=album_id, error=exc, error_code=exc.error_code),
         )
         return
 
     title = str(preview.get("title") or f"JM{album_id}")
-    estimated_text = str(preview.get("estimated_text") or lang_text("estimated_unknown"))
+    estimated_text = str(preview.get("estimated_text") or lang_text(LangKey.ESTIMATED_UNKNOWN))
     cover_url = preview.get("cover_url")
     page_count = preview.get("page_count")
     page_count_is_estimated = bool(preview.get("page_count_is_estimated"))
 
     if isinstance(page_count, int) and page_count > 0:
         page_text = lang_text(
-            "page_count_estimated" if page_count_is_estimated else "page_count_exact",
+            LangKey.PAGE_COUNT_ESTIMATED if page_count_is_estimated else LangKey.PAGE_COUNT_EXACT,
             page_count=page_count,
         )
     else:
-        page_text = lang_text("page_count_unknown")
+        page_text = lang_text(LangKey.PAGE_COUNT_UNKNOWN)
 
     if _is_album_too_large(page_count, settings):
         await _safe_send(
             napcat,
             group_id,
-            lang_text(
-                "album_too_large",
+            lang_text(LangKey.ALBUM_TOO_LARGE,
                 album_id=album_id,
                 title=title,
                 page_text=page_text,
@@ -2658,13 +2642,12 @@ async def _send_album_preview(
 
     extra_warning = ""
     if _needs_large_album_confirmation(page_count, settings):
-        extra_warning = lang_text("large_album_hint", limit=settings.large_album_warning_pages)
+        extra_warning = lang_text(LangKey.LARGE_ALBUM_HINT, limit=settings.large_album_warning_pages)
 
     await _safe_send(
         napcat,
         group_id,
-        lang_text(
-            "album_preview",
+        lang_text(LangKey.ALBUM_PREVIEW,
             album_id=album_id,
             title=title,
             page_text=page_text,
@@ -2699,27 +2682,27 @@ def _is_album_too_large(page_count: object, settings: BotSettings) -> bool:
 
 
 def _format_search_results(query: str, results: list[dict[str, Any]]) -> str:
-    lines = [lang_text("search_results_header", query=query)]
+    lines = [lang_text(LangKey.SEARCH_RESULTS_HEADER, query=query)]
     for index, result in enumerate(results, start=1):
         album_id = str(result.get("album_id") or "")
         title = _truncate_display_text(str(result.get("title") or f"JM{album_id}"), 46)
-        lines.append(lang_text("search_result_line", index=index, album_id=album_id, title=title))
-    lines.append(lang_text("search_results_footer", count=len(results)))
+        lines.append(lang_text(LangKey.SEARCH_RESULT_LINE, index=index, album_id=album_id, title=title))
+    lines.append(lang_text(LangKey.SEARCH_RESULTS_FOOTER, count=len(results)))
     return "\n".join(lines)
 
 
 def _ranking_period_label(period: str) -> str:
     return {
-        "day": lang_text("period_day"),
-        "week": lang_text("period_week"),
-        "month": lang_text("period_month"),
-    }.get(period, lang_text("period_unknown"))
+        "day": lang_text(LangKey.PERIOD_DAY),
+        "week": lang_text(LangKey.PERIOD_WEEK),
+        "month": lang_text(LangKey.PERIOD_MONTH),
+    }.get(period, lang_text(LangKey.PERIOD_UNKNOWN))
 
 
 def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any]]) -> str:
     period = str(payload.get("period") or "")
     label = str(payload.get("period_label") or _ranking_period_label(period))
-    lines = [lang_text("ranking_results_header", period=label)]
+    lines = [lang_text(LangKey.RANKING_RESULTS_HEADER, period=label)]
     for index, result in enumerate(results, start=1):
         try:
             rank = int(result.get("rank"))
@@ -2727,35 +2710,35 @@ def _format_ranking_results(payload: dict[str, Any], results: list[dict[str, Any
             rank = index
         album_id = str(result.get("album_id") or "")
         title = _truncate_display_text(str(result.get("title") or f"JM{album_id}"), 46)
-        lines.append(lang_text("ranking_result_line", rank=rank, album_id=album_id, title=title))
-    lines.append(lang_text("ranking_results_footer"))
+        lines.append(lang_text(LangKey.RANKING_RESULT_LINE, rank=rank, album_id=album_id, title=title))
+    lines.append(lang_text(LangKey.RANKING_RESULTS_FOOTER))
     return "\n".join(lines)
 
 
 def _format_jav_search_results(query: str, results: list[dict[str, Any]]) -> str:
-    lines = [lang_text("av_search_results_header", query=query)]
+    lines = [lang_text(LangKey.AV_SEARCH_RESULTS_HEADER, query=query)]
     for index, result in enumerate(results[:10], start=1):
         lines.append(_format_jav_list_line(index, result, rank=index))
-    lines.append(lang_text("av_search_results_footer"))
+    lines.append(lang_text(LangKey.AV_SEARCH_RESULTS_FOOTER))
     return "\n".join(lines)
 
 
 def _format_jav_actor_search_results(query: str, results: list[dict[str, Any]]) -> str:
-    lines = [lang_text("actor_search_results_header", query=query)]
+    lines = [lang_text(LangKey.ACTOR_SEARCH_RESULTS_HEADER, query=query)]
     for index, result in enumerate(results[:10], start=1):
         lines.append(_format_jav_list_line(index, result, rank=index))
-    lines.append(lang_text("actor_search_results_footer"))
+    lines.append(lang_text(LangKey.ACTOR_SEARCH_RESULTS_FOOTER))
     return "\n".join(lines)
 
 
 def _format_javdb_ranking_results(payload: dict[str, Any], results: list[dict[str, Any]]) -> str:
     period = str(payload.get("period") or "")
     label = str(payload.get("period_label") or _ranking_period_label(period))
-    lines = [lang_text("db_ranking_results_header", period=label)]
+    lines = [lang_text(LangKey.DB_RANKING_RESULTS_HEADER, period=label)]
     for index, result in enumerate(results[:20], start=1):
         rank = _int_or_default(result.get("rank"), index)
         lines.append(_format_jav_list_line(index, result, rank=rank))
-    lines.append(lang_text("db_ranking_results_footer"))
+    lines.append(lang_text(LangKey.DB_RANKING_RESULTS_FOOTER))
     return "\n".join(lines)
 
 
@@ -2764,9 +2747,8 @@ def _format_jav_list_line(index: int, result: dict[str, Any], *, rank: int) -> s
     title = _truncate_display_text(str(result.get("title") or code), 42)
     source = str(result.get("source") or "javdb")
     actors = _format_name_list(result.get("actors"), limit=3)
-    actors_suffix = lang_text("av_list_actors_suffix", actors=actors) if actors else ""
-    return lang_text(
-        "av_list_line",
+    actors_suffix = lang_text(LangKey.AV_LIST_ACTORS_SUFFIX, actors=actors) if actors else ""
+    return lang_text(LangKey.AV_LIST_LINE,
         index=index,
         rank=rank,
         code=code,
@@ -2786,24 +2768,24 @@ def _int_or_default(value: object, default: int) -> int:
 def _format_jav_video(payload: dict[str, Any]) -> str:
     code = str(payload.get("code") or "?")
     title = _truncate_display_text(str(payload.get("title") or code), 80)
-    lines = [lang_text("jav_result_header", code=code), lang_text("jav_title_line", title=title)]
+    lines = [lang_text(LangKey.JAV_RESULT_HEADER, code=code), lang_text(LangKey.JAV_TITLE_LINE, title=title)]
     source = payload.get("source")
     if source:
-        lines.append(lang_text("jav_source_line", source=str(source)))
+        lines.append(lang_text(LangKey.JAV_SOURCE_LINE, source=str(source)))
 
     release_date = payload.get("release_date")
     if release_date:
-        lines.append(lang_text("jav_release_date_line", release_date=release_date))
+        lines.append(lang_text(LangKey.JAV_RELEASE_DATE_LINE, release_date=release_date))
 
     runtime = payload.get("runtime_minutes")
     if isinstance(runtime, int) and runtime > 0:
-        lines.append(lang_text("jav_runtime_line", runtime=runtime))
+        lines.append(lang_text(LangKey.JAV_RUNTIME_LINE, runtime=runtime))
 
     for key, label_key in [
-        ("studio", "jav_studio_line"),
-        ("publisher", "jav_publisher_line"),
-        ("series", "jav_series_line"),
-        ("director", "jav_director_line"),
+        ("studio", LangKey.JAV_STUDIO_LINE),
+        ("publisher", LangKey.JAV_PUBLISHER_LINE),
+        ("series", LangKey.JAV_SERIES_LINE),
+        ("director", LangKey.JAV_DIRECTOR_LINE),
     ]:
         value = payload.get(key)
         if value:
@@ -2811,19 +2793,19 @@ def _format_jav_video(payload: dict[str, Any]) -> str:
 
     rating = payload.get("rating")
     if isinstance(rating, (int, float)):
-        lines.append(lang_text("jav_rating_line", rating=f"{float(rating):.1f}"))
+        lines.append(lang_text(LangKey.JAV_RATING_LINE, rating=f"{float(rating):.1f}"))
 
     actors = _format_name_list(payload.get("actors"), limit=8)
     if actors:
-        lines.append(lang_text("jav_actors_line", actors=actors))
+        lines.append(lang_text(LangKey.JAV_ACTORS_LINE, actors=actors))
 
     genres = _format_name_list(payload.get("genres"), limit=10)
     if genres:
-        lines.append(lang_text("jav_genres_line", genres=genres))
+        lines.append(lang_text(LangKey.JAV_GENRES_LINE, genres=genres))
 
     url = payload.get("url")
     if url:
-        lines.append(lang_text("jav_url_line", url=url))
+        lines.append(lang_text(LangKey.JAV_URL_LINE, url=url))
     return "\n".join(lines)
 
 
@@ -2844,34 +2826,30 @@ def _format_admin_status(payload: dict[str, Any], uploading_count: int) -> str:
     if memory:
         memory_text = f"{_format_bytes(int(memory.get('used') or 0))} / {_format_bytes(int(memory.get('total') or 0))}"
     else:
-        memory_text = lang_text("unknown")
+        memory_text = lang_text(LangKey.UNKNOWN)
 
     cpu = payload.get("cpu_percent")
-    cpu_text = f"{float(cpu):.1f}%" if isinstance(cpu, (int, float)) else lang_text("unknown")
+    cpu_text = f"{float(cpu):.1f}%" if isinstance(cpu, (int, float)) else lang_text(LangKey.UNKNOWN)
 
     lines = [
-        lang_text("admin_status_header"),
-        lang_text("admin_status_cpu", cpu=cpu_text),
-        lang_text("admin_status_memory", memory=memory_text),
-        lang_text(
-            "admin_status_disk",
+        lang_text(LangKey.ADMIN_STATUS_HEADER),
+        lang_text(LangKey.ADMIN_STATUS_CPU, cpu=cpu_text),
+        lang_text(LangKey.ADMIN_STATUS_MEMORY, memory=memory_text),
+        lang_text(LangKey.ADMIN_STATUS_DISK,
             used=_format_bytes(int(disk.get("used") or 0)),
             total=_format_bytes(int(disk.get("total") or 0)),
             free=_format_bytes(int(disk.get("free") or 0)),
         ),
-        lang_text(
-            "admin_status_cache",
+        lang_text(LangKey.ADMIN_STATUS_CACHE,
             data=_format_bytes(int(cache.get("data") or 0)),
             jobs=_format_bytes(int(cache.get("jobs") or 0)),
             bot=_format_bytes(int(cache.get("bot_downloads") or 0)),
         ),
-        lang_text(
-            "admin_status_network",
+        lang_text(LangKey.ADMIN_STATUS_NETWORK,
             tx=_format_rate(network.get("tx_bytes_per_second")),
             rx=_format_rate(network.get("rx_bytes_per_second")),
         ),
-        lang_text(
-            "admin_status_queue",
+        lang_text(LangKey.ADMIN_STATUS_QUEUE,
             downloading=int(jobs.get("downloading") or 0),
             queued=int(jobs.get("queued") or 0),
             converting=int(jobs.get("converting") or 0),
@@ -2883,9 +2861,9 @@ def _format_admin_status(payload: dict[str, Any], uploading_count: int) -> str:
 
 def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
     if not jobs:
-        return lang_text("admin_queue_empty")
+        return lang_text(LangKey.ADMIN_QUEUE_EMPTY)
 
-    lines = [lang_text("admin_queue_header")]
+    lines = [lang_text(LangKey.ADMIN_QUEUE_HEADER)]
     for index, job in enumerate(jobs[:20], start=1):
         job_id = _short_job_id(str(job.get("job_id") or ""))
         album_id = str(job.get("album_id") or "?")
@@ -2893,8 +2871,7 @@ def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
         status_value = str(job.get("status") or "")
         progress = _job_progress_text(job)
         lines.append(
-            lang_text(
-                "admin_queue_line",
+            lang_text(LangKey.ADMIN_QUEUE_LINE,
                 index=index,
                 job_id=job_id,
                 album_id=album_id,
@@ -2907,22 +2884,21 @@ def _format_admin_queue(jobs: list[dict[str, Any]]) -> str:
 
 def _format_admin_audit(events: list[dict[str, Any]]) -> str:
     if not events:
-        return lang_text("admin_audit_empty")
+        return lang_text(LangKey.ADMIN_AUDIT_EMPTY)
 
-    lines = [lang_text("admin_audit_header")]
+    lines = [lang_text(LangKey.ADMIN_AUDIT_HEADER)]
     for index, event in enumerate(events[:10], start=1):
         target = str(event.get("target") or "")
         error_code = str(event.get("error_code") or "")
         lines.append(
-            lang_text(
-                "admin_audit_line",
+            lang_text(LangKey.ADMIN_AUDIT_LINE,
                 index=index,
                 time=_format_history_time(str(event.get("created_at") or "")),
                 command=_audit_command_label(str(event.get("command") or "")),
                 status=_audit_status_label(str(event.get("status") or "")),
                 user_id=str(event.get("user_id") or "?"),
-                target=lang_text("admin_audit_target_suffix", target=target) if target else "",
-                error=lang_text("admin_audit_error_suffix", error_code=error_code) if error_code else "",
+                target=lang_text(LangKey.ADMIN_AUDIT_TARGET_SUFFIX, target=target) if target else "",
+                error=lang_text(LangKey.ADMIN_AUDIT_ERROR_SUFFIX, error_code=error_code) if error_code else "",
             )
         )
     return "\n".join(lines)
@@ -2930,19 +2906,18 @@ def _format_admin_audit(events: list[dict[str, Any]]) -> str:
 
 def _format_history_jobs(jobs: list[dict[str, Any]], group_scope: bool) -> str:
     if not jobs:
-        return lang_text("group_history_empty" if group_scope else "user_history_empty")
+        return lang_text(LangKey.GROUP_HISTORY_EMPTY if group_scope else LangKey.USER_HISTORY_EMPTY)
 
-    lines = [lang_text("group_history_header" if group_scope else "user_history_header")]
+    lines = [lang_text(LangKey.GROUP_HISTORY_HEADER if group_scope else LangKey.USER_HISTORY_HEADER)]
     for index, job in enumerate(jobs[:10], start=1):
         album_id = str(job.get("album_id") or "?")
         status = _job_progress_text(job) or _status_label(str(job.get("status") or ""))
         time_text = _format_history_time(str(job.get("updated_at") or job.get("created_at") or ""))
         extra = ""
         if group_scope:
-            extra = lang_text("history_user_suffix", user_id=str(job.get("user_id") or "?"))
+            extra = lang_text(LangKey.HISTORY_USER_SUFFIX, user_id=str(job.get("user_id") or "?"))
         lines.append(
-            lang_text(
-                "history_line",
+            lang_text(LangKey.HISTORY_LINE,
                 index=index,
                 album_id=album_id,
                 status=status,
@@ -2955,54 +2930,54 @@ def _format_history_jobs(jobs: list[dict[str, Any]], group_scope: bool) -> str:
 
 def _format_history_time(value: str) -> str:
     if not value:
-        return lang_text("time_unknown")
+        return lang_text(LangKey.TIME_UNKNOWN)
     return value.replace("T", " ")[:16]
 
 
 def _audit_command_label(command: str) -> str:
     key_by_command = {
-        "admin:status": "audit_command_admin_status",
-        "admin:queue": "audit_command_admin_queue",
-        "admin:audit": "audit_command_admin_audit",
-        "admin:cleanup": "audit_command_admin_cleanup",
-        "admin:cancel": "audit_command_admin_cancel",
-        "confirm_download": "audit_command_confirm_download",
-        "search_select": "audit_command_search_select",
-        "jav_action": "audit_command_jav_action",
-        "active_cancel": "audit_command_active_cancel",
-        "blocked_group": "audit_command_blocked_group",
-        "home": "audit_command_home",
-        "help": "audit_command_help",
-        "features": "audit_command_features",
-        "history": "audit_command_history",
-        "group_history": "audit_command_group_history",
-        "usage": "audit_command_usage",
-        "ok": "audit_command_ok",
-        "search": "audit_command_search",
-        "ranking": "audit_command_ranking",
-        "av_search": "audit_command_av_search",
-        "actor_search": "audit_command_actor_search",
-        "db_ranking": "audit_command_db_ranking",
-        "jav": "audit_command_jav",
-        "tg_bind": "audit_command_tg_bind",
-        "tg_list": "audit_command_tg_list",
-        "tg_latest": "audit_command_tg_latest",
-        "unknown_command": "audit_command_unknown",
-        "error": "audit_command_error",
+        "admin:status": LangKey.AUDIT_COMMAND_ADMIN_STATUS,
+        "admin:queue": LangKey.AUDIT_COMMAND_ADMIN_QUEUE,
+        "admin:audit": LangKey.AUDIT_COMMAND_ADMIN_AUDIT,
+        "admin:cleanup": LangKey.AUDIT_COMMAND_ADMIN_CLEANUP,
+        "admin:cancel": LangKey.AUDIT_COMMAND_ADMIN_CANCEL,
+        "confirm_download": LangKey.AUDIT_COMMAND_CONFIRM_DOWNLOAD,
+        "search_select": LangKey.AUDIT_COMMAND_SEARCH_SELECT,
+        "jav_action": LangKey.AUDIT_COMMAND_JAV_ACTION,
+        "active_cancel": LangKey.AUDIT_COMMAND_ACTIVE_CANCEL,
+        "blocked_group": LangKey.AUDIT_COMMAND_BLOCKED_GROUP,
+        "home": LangKey.AUDIT_COMMAND_HOME,
+        "help": LangKey.AUDIT_COMMAND_HELP,
+        "features": LangKey.AUDIT_COMMAND_FEATURES,
+        "history": LangKey.AUDIT_COMMAND_HISTORY,
+        "group_history": LangKey.AUDIT_COMMAND_GROUP_HISTORY,
+        "usage": LangKey.AUDIT_COMMAND_USAGE,
+        "ok": LangKey.AUDIT_COMMAND_OK,
+        "search": LangKey.AUDIT_COMMAND_SEARCH,
+        "ranking": LangKey.AUDIT_COMMAND_RANKING,
+        "av_search": LangKey.AUDIT_COMMAND_AV_SEARCH,
+        "actor_search": LangKey.AUDIT_COMMAND_ACTOR_SEARCH,
+        "db_ranking": LangKey.AUDIT_COMMAND_DB_RANKING,
+        "jav": LangKey.AUDIT_COMMAND_JAV,
+        "tg_bind": LangKey.AUDIT_COMMAND_TG_BIND,
+        "tg_list": LangKey.AUDIT_COMMAND_TG_LIST,
+        "tg_latest": LangKey.AUDIT_COMMAND_TG_LATEST,
+        "unknown_command": LangKey.AUDIT_COMMAND_UNKNOWN,
+        "error": LangKey.AUDIT_COMMAND_ERROR,
     }
     key = key_by_command.get(command)
-    return lang_text(key) if key else (command or lang_text("unknown"))
+    return lang_text(key) if key else (command or lang_text(LangKey.UNKNOWN))
 
 
 def _audit_status_label(status_value: str) -> str:
     key_by_status = {
-        "received": "audit_status_received",
-        "handled": "audit_status_handled",
-        "failed": "audit_status_failed",
-        "blocked": "audit_status_blocked",
+        "received": LangKey.AUDIT_STATUS_RECEIVED,
+        "handled": LangKey.AUDIT_STATUS_HANDLED,
+        "failed": LangKey.AUDIT_STATUS_FAILED,
+        "blocked": LangKey.AUDIT_STATUS_BLOCKED,
     }
     key = key_by_status.get(status_value)
-    return lang_text(key) if key else (status_value or lang_text("unknown"))
+    return lang_text(key) if key else (status_value or lang_text(LangKey.UNKNOWN))
 
 
 def _audit_target(parse_result: object) -> str | None:
@@ -3073,7 +3048,7 @@ def _merge_uploading_jobs(jobs: list[dict[str, Any]], state: BotState) -> list[d
             "status": "uploading",
             "downloaded_files": 0,
             "total_files": 0,
-            "progress_message": lang_text("status_uploading"),
+            "progress_message": lang_text(LangKey.STATUS_UPLOADING),
         }
     return list(merged.values())
 
@@ -3082,9 +3057,9 @@ def _job_progress_text(job: dict[str, Any]) -> str:
     status_value = str(job.get("status") or "")
     if status_value == "failed":
         error_code = job.get("error_code")
-        return lang_text("status_error_with_code", error_code=error_code or "UNKNOWN")
+        return lang_text(LangKey.STATUS_ERROR_WITH_CODE, error_code=error_code or "UNKNOWN")
     if status_value == "uploading":
-        return lang_text("status_uploading")
+        return lang_text(LangKey.STATUS_UPLOADING)
 
     total_files = int(job.get("total_files") or 0)
     downloaded_files = int(job.get("downloaded_files") or 0)
@@ -3099,15 +3074,15 @@ def _job_progress_text(job: dict[str, Any]) -> str:
 
 def _status_label(status_value: str) -> str:
     key_by_status = {
-        "queued": "status_queued",
-        "downloading": "status_downloading",
-        "converting": "status_converting",
-        "completed": "status_completed",
-        "failed": "status_failed",
-        "uploading": "status_uploading",
+        "queued": LangKey.STATUS_QUEUED,
+        "downloading": LangKey.STATUS_DOWNLOADING,
+        "converting": LangKey.STATUS_CONVERTING,
+        "completed": LangKey.STATUS_COMPLETED,
+        "failed": LangKey.STATUS_FAILED,
+        "uploading": LangKey.STATUS_UPLOADING,
     }
     key = key_by_status.get(status_value)
-    return lang_text(key) if key else (status_value or lang_text("unknown"))
+    return lang_text(key) if key else (status_value or lang_text(LangKey.UNKNOWN))
 
 
 def _short_job_id(job_id: str) -> str:
@@ -3260,23 +3235,23 @@ async def _create_job_and_monitor(
         await _safe_send(
             napcat,
             group_id,
-            lang_text("duplicate_job", album_id=album_id, suffix=suffix, error_code=exc.error_code),
+            lang_text(LangKey.DUPLICATE_JOB, album_id=album_id, suffix=suffix, error_code=exc.error_code),
         )
         return
     except JobLimitError as exc:
         logger.info("Job limit rejected JM%s: %s", album_id, exc)
-        await _safe_send(napcat, group_id, lang_text("job_limit_reached", error=exc, error_code=exc.error_code))
+        await _safe_send(napcat, group_id, lang_text(LangKey.JOB_LIMIT_REACHED, error=exc, error_code=exc.error_code))
         return
     except BackendError as exc:
         logger.exception("Could not create backend job.")
         if exc.error_code == "BACKEND_UNAVAILABLE":
-            await _safe_send(napcat, group_id, lang_text("backend_unavailable", error_code=exc.error_code))
+            await _safe_send(napcat, group_id, lang_text(LangKey.BACKEND_UNAVAILABLE, error_code=exc.error_code))
         else:
-            await _safe_send(napcat, group_id, lang_text("job_create_failed", error=exc, error_code=exc.error_code))
+            await _safe_send(napcat, group_id, lang_text(LangKey.JOB_CREATE_FAILED, error=exc, error_code=exc.error_code))
         return
 
     job_id = str(created["job_id"])
-    message = lang_text("job_accepted", album_id=album_id, job_id=job_id)
+    message = lang_text(LangKey.JOB_ACCEPTED, album_id=album_id, job_id=job_id)
     if extra_message:
         message = f"{message}\n{extra_message}"
     await _safe_send(napcat, group_id, message)
@@ -3305,12 +3280,12 @@ async def monitor_job(
 
         status = job.get("status")
         if status == "failed":
-            error_message = job.get("error_message") or lang_text("generic_job_failed")
+            error_message = job.get("error_message") or lang_text(LangKey.GENERIC_JOB_FAILED)
             error_code = job.get("error_code") or "UNKNOWN"
             await _safe_send(
                 napcat,
                 group_id,
-                lang_text("job_failed", album_id=album_id, error_message=error_message, error_code=error_code),
+                lang_text(LangKey.JOB_FAILED, album_id=album_id, error_message=error_message, error_code=error_code),
             )
             return
 
@@ -3332,7 +3307,7 @@ async def monitor_job(
             await _safe_send(
                 napcat,
                 group_id,
-                lang_text("job_progress", album_id=album_id, progress_message=progress_message),
+                lang_text(LangKey.JOB_PROGRESS, album_id=album_id, progress_message=progress_message),
             )
             last_progress_at = now
             last_progress_key = progress_key
@@ -3377,7 +3352,7 @@ async def _download_and_upload(
             pdf_path = await backend.download_file(job_id, dest_path)
         except BackendError as exc:
             logger.exception("Could not download PDF for job %s.", job_id)
-            await _safe_send(napcat, group_id, lang_text("pdf_download_failed", album_id=album_id, error_code=exc.error_code))
+            await _safe_send(napcat, group_id, lang_text(LangKey.PDF_DOWNLOAD_FAILED, album_id=album_id, error_code=exc.error_code))
             return
 
         try:
@@ -3391,15 +3366,14 @@ async def _download_and_upload(
             )
         except UploadPreparationError as exc:
             logger.exception("Could not prepare upload files for job %s.", job_id)
-            await _safe_send(napcat, group_id, lang_text("upload_prepare_failed", album_id=album_id, error=exc))
+            await _safe_send(napcat, group_id, lang_text(LangKey.UPLOAD_PREPARE_FAILED, album_id=album_id, error=exc))
             return
 
         if len(upload_files) > 1:
             await _safe_send(
                 napcat,
                 group_id,
-                lang_text(
-                    "large_pdf_split",
+                lang_text(LangKey.LARGE_PDF_SPLIT,
                     album_id=album_id,
                     size=_format_bytes(pdf_path.stat().st_size),
                     count=len(upload_files),
@@ -3426,17 +3400,17 @@ async def _download_and_upload(
                     await _safe_send(
                         napcat,
                         group_id,
-                        lang_text("upload_part_failed", album_id=album_id, index=index, count=len(upload_files)),
+                        lang_text(LangKey.UPLOAD_PART_FAILED, album_id=album_id, index=index, count=len(upload_files)),
                     )
                     return
         except UploadCancelledError:
-            await _safe_send(napcat, group_id, lang_text("upload_cancelled_by_admin", album_id=album_id))
+            await _safe_send(napcat, group_id, lang_text(LangKey.UPLOAD_CANCELLED_BY_ADMIN, album_id=album_id))
             return
 
         if len(upload_files) == 1:
-            await _safe_send(napcat, group_id, lang_text("upload_completed", album_id=album_id, filename=filename))
+            await _safe_send(napcat, group_id, lang_text(LangKey.UPLOAD_COMPLETED, album_id=album_id, filename=filename))
         else:
-            await _safe_send(napcat, group_id, lang_text("upload_completed_parts", album_id=album_id))
+            await _safe_send(napcat, group_id, lang_text(LangKey.UPLOAD_COMPLETED_PARTS, album_id=album_id))
         await asyncio.to_thread(_cleanup_bot_download_dir, dest_dir, settings.data_dir.resolve() / "bot_downloads")
     finally:
         if state is not None:
@@ -3512,7 +3486,7 @@ async def _upload_item_with_fallback(
     await _safe_send(
         napcat,
         group_id,
-        lang_text("upload_retry_split", album_id=album_id, count=len(fallback_files)),
+        lang_text(LangKey.UPLOAD_RETRY_SPLIT, album_id=album_id, count=len(fallback_files)),
     )
     for sub_index, (sub_path, sub_name) in enumerate(fallback_files, start=1):
         if cancel_requested is not None and cancel_requested():
@@ -3591,13 +3565,13 @@ def _split_pdf_for_upload(
     try:
         import pikepdf
     except ImportError as exc:
-        raise UploadPreparationError(lang_text("upload_error_missing_pikepdf")) from exc
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_MISSING_PIKEPDF)) from exc
 
     split_dir = pdf_path.parent / f"{pdf_path.stem}_parts"
     parent = pdf_path.parent.resolve()
     split_dir = split_dir.resolve()
     if not split_dir.is_relative_to(parent):
-        raise UploadPreparationError(lang_text("upload_error_split_dir"))
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_SPLIT_DIR))
     if split_dir.exists():
         shutil.rmtree(split_dir)
     split_dir.mkdir(parents=True, exist_ok=True)
@@ -3627,14 +3601,14 @@ def _split_pdf_for_upload(
                 if not oversized:
                     return parts
                 if pages_per_part == 1:
-                    raise UploadPreparationError(lang_text("upload_error_part_too_large"))
+                    raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_PART_TOO_LARGE))
                 part_count = min(page_count, max(part_count + 1, math.ceil(part_count * 1.5)))
     except UploadPreparationError:
         raise
     except Exception as exc:
-        raise UploadPreparationError(lang_text("upload_error_split_failed")) from exc
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_SPLIT_FAILED)) from exc
 
-    raise UploadPreparationError(lang_text("upload_error_split_failed"))
+    raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_SPLIT_FAILED))
 
 
 def _write_pdf_parts(
@@ -3669,7 +3643,7 @@ def _write_pdf_parts(
                 part_pdf.close()
 
         if part_path is None or not part_path.is_file() or part_path.stat().st_size <= 0:
-            raise UploadPreparationError(lang_text("upload_error_invalid_part"))
+            raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_INVALID_PART))
         parts.append((part_path, part_name))
         start = end
         index += 1
@@ -3684,7 +3658,7 @@ def _split_pdf_for_retry(
 ) -> list[tuple[Path, str]]:
     pdf_path = pdf_path.resolve()
     if not pdf_path.is_file() or pdf_path.stat().st_size <= 0:
-        raise UploadPreparationError(lang_text("upload_error_invalid_part"))
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_INVALID_PART))
     retry_max_upload_bytes = max(1, int(pdf_path.stat().st_size * 0.65))
     return _split_pdf_for_upload(pdf_path, filename, retry_max_upload_bytes, max_filename_bytes, album_id)
 
@@ -3692,12 +3666,12 @@ def _split_pdf_for_retry(
 def _stage_upload_file(source_path: Path, dest_dir: Path, label: str) -> Path:
     source_path = source_path.resolve()
     if not source_path.is_file() or source_path.stat().st_size <= 0:
-        raise UploadPreparationError(lang_text("upload_error_invalid_part"))
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_INVALID_PART))
 
     dest_dir = dest_dir.resolve()
     stage_dir = (dest_dir / "_upload").resolve()
     if not stage_dir.is_relative_to(dest_dir):
-        raise UploadPreparationError(lang_text("upload_error_split_dir"))
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_SPLIT_DIR))
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "upload"
@@ -3707,7 +3681,7 @@ def _stage_upload_file(source_path: Path, dest_dir: Path, label: str) -> Path:
     shutil.copy2(source_path, staged_path)
     if staged_path.stat().st_size != source_path.stat().st_size:
         staged_path.unlink(missing_ok=True)
-        raise UploadPreparationError(lang_text("upload_error_invalid_part"))
+        raise UploadPreparationError(lang_text(LangKey.UPLOAD_ERROR_INVALID_PART))
     return staged_path
 
 
@@ -3783,7 +3757,7 @@ def _format_bytes(size: int) -> str:
 
 def _format_rate(value: object) -> str:
     if not isinstance(value, (int, float)):
-        return lang_text("unknown")
+        return lang_text(LangKey.UNKNOWN)
     return f"{_format_bytes(int(value))}/s"
 
 
@@ -3810,12 +3784,12 @@ async def monitor_health(
         except Exception:
             logger.warning("Backend health check failed.", exc_info=True)
             if was_healthy:
-                await _notify_health_groups(settings, napcat, lang_text("health_failed"))
+                await _notify_health_groups(settings, napcat, lang_text(LangKey.HEALTH_FAILED))
             was_healthy = False
             continue
 
         if not was_healthy:
-            await _notify_health_groups(settings, napcat, lang_text("health_recovered"))
+            await _notify_health_groups(settings, napcat, lang_text(LangKey.HEALTH_RECOVERED))
         was_healthy = True
 
 
