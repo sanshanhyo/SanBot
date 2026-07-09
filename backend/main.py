@@ -37,6 +37,8 @@ from .models import (
     TelegramChannelResponse,
     TelegramFetchRequest,
     TelegramFetchResponse,
+    TelegramGroupedFetchRequest,
+    TelegramGroupedFetchResponse,
     TelegramGroupListResponse,
 )
 from .javlibrary_service import JavLibraryService, JavLibraryServiceConfig, JavLibraryServiceError
@@ -688,6 +690,26 @@ async def fetch_latest_tg_media(
     except TelegramMirrorError as exc:
         raise _tg_http_exception(exc) from exc
     return TelegramFetchResponse(**result)
+
+
+@app.post("/api/tg/fetch-latest-groups", response_model=TelegramGroupedFetchResponse)
+async def fetch_latest_tg_media_for_groups(
+    payload: TelegramGroupedFetchRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> TelegramGroupedFetchResponse:
+    _require_api_token(request, authorization)
+    group_ids = [str(group_id) for group_id in payload.group_ids if str(group_id).isdigit()]
+    if not group_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": "group_ids 至少需要包含一个 QQ 群号", "error_code": "TG_GROUP_IDS_INVALID"},
+        )
+    try:
+        result = await _tg_mirror_service(request).fetch_latest_for_groups(group_ids, payload.limit)
+    except TelegramMirrorError as exc:
+        raise _tg_http_exception(exc) from exc
+    return TelegramGroupedFetchResponse(**result)
 
 
 def _tg_http_exception(exc: TelegramMirrorError) -> HTTPException:

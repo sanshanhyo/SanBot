@@ -248,6 +248,28 @@ class TelegramMirrorService:
                 raise TelegramMirrorError("Telegram 频道内容拉取失败，请稍后再试", "TG_FETCH_FAILED") from exc
         return {"items": items, "channels": channels, "skipped": skipped}
 
+    async def fetch_latest_for_groups(self, group_ids: list[str], limit: int) -> dict[str, Any]:
+        self._require_enabled()
+        await self.cleanup_media_cache()
+        normalized_group_ids = self._normalize_group_ids(group_ids)
+        if not normalized_group_ids:
+            return {"groups": []}
+        if self._mode == "bot":
+            return await self._fetch_latest_bot_for_groups(normalized_group_ids, limit)
+
+        groups: list[dict[str, Any]] = []
+        for group_id in normalized_group_ids:
+            result = await self.fetch_latest(group_id, limit)
+            groups.append(
+                {
+                    "group_id": group_id,
+                    "items": result.get("items", []),
+                    "channels": result.get("channels", []),
+                    "skipped": int(result.get("skipped") or 0),
+                }
+            )
+        return {"groups": groups}
+
     async def cleanup_media_cache(self) -> None:
         ttl = max(0, self.config.media_cache_ttl_seconds)
         if ttl <= 0:
@@ -271,13 +293,39 @@ class TelegramMirrorService:
         limit: int,
         requested_channels: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        all_channels = self._list_all_channels()
-        if not all_channels:
-            return {"items": [], "channels": requested_channels, "skipped": 0}
+        result = await self._fetch_latest_bot_for_groups([group_id], limit)
+        for group in result.get("groups", []):
+            if str(group.get("group_id")) == str(group_id):
+                return {
+                    "items": group.get("items", []),
+                    "channels": group.get("channels", requested_channels),
+                    "skipped": int(group.get("skipped") or 0),
+                }
+        return {"items": [], "channels": requested_channels, "skipped": 0}
 
-        remaining = max(1, min(limit, self.config.max_fetch_limit))
-        items: list[dict[str, Any]] = []
-        skipped = 0
+    async def _fetch_latest_bot_for_groups(self, group_ids: list[str], limit: int) -> dict[str, Any]:
+        normalized_group_ids = self._normalize_group_ids(group_ids)
+        per_group: dict[str, dict[str, Any]] = {
+            group_id: {
+                "group_id": group_id,
+                "items": [],
+                "channels": self.list_channels(group_id),
+                "skipped": 0,
+            }
+            for group_id in normalized_group_ids
+        }
+        if not per_group:
+            return {"groups": []}
+
+        target_channels = [
+            channel
+            for channel in self._list_all_channels()
+            if str(channel.get("group_id") or "") in per_group
+        ]
+        if not target_channels:
+            return {"groups": [per_group[group_id] for group_id in normalized_group_ids]}
+
+        per_group_limit = max(1, min(limit, self.config.max_fetch_limit))
         offset = self._get_state_int("bot_update_offset")
         updates = await self._bot_api_json("getUpdates", params={"offset": offset, "limit": 100, "timeout": 0})
         result = updates.get("result")
@@ -301,7 +349,7 @@ class TelegramMirrorService:
                     last_consumed_update_id = update_id
                 continue
 
-            matched_channels = self._matching_bot_channels(all_channels, chat)
+            matched_channels = self._matching_bot_channels(target_channels, chat)
             if not matched_channels:
                 if update_id is not None:
                     last_consumed_update_id = update_id
@@ -319,18 +367,25 @@ class TelegramMirrorService:
                     last_consumed_update_id = update_id
                 continue
 
-            requested_group_hit = any(str(channel["group_id"]) == str(group_id) for channel in matched_channels)
-            if requested_group_hit and len(items) >= remaining:
+            has_group_with_capacity = any(
+                len(per_group[str(channel["group_id"])]["items"]) < per_group_limit
+                for channel in matched_channels
+                if str(channel.get("group_id") or "") in per_group
+            )
+            if not has_group_with_capacity:
                 break
 
             for channel in matched_channels:
+                matched_group_id = str(channel["group_id"])
+                group_result = per_group.get(matched_group_id)
+                if group_result is None or len(group_result["items"]) >= per_group_limit:
+                    continue
                 real_channel = self._update_bot_channel_from_chat(channel, chat)
                 if self._message_seen(real_channel["group_id"], real_channel["channel_id"], message_id):
                     continue
                 if media["file_size"] and int(media["file_size"]) > self._bot_max_file_bytes:
                     self._record_skipped_message(real_channel, message_id, media["media_type"], int(media["file_size"]), _bot_message_datetime(channel_post))
-                    if str(real_channel["group_id"]) == str(group_id):
-                        skipped += 1
+                    group_result["skipped"] += 1
                     continue
                 try:
                     item = await self._download_bot_media(real_channel, channel_post, media)
@@ -340,18 +395,18 @@ class TelegramMirrorService:
                     logger.exception("Could not download Telegram Bot API media.")
                     raise TelegramMirrorError("Telegram Bot API 媒体下载失败", "TG_BOT_DOWNLOAD_FAILED") from None
                 if item is None:
-                    if str(real_channel["group_id"]) == str(group_id):
-                        skipped += 1
+                    group_result["skipped"] += 1
                     continue
-                if str(real_channel["group_id"]) == str(group_id) and len(items) < remaining:
-                    items.append(item)
+                group_result["items"].append(item)
 
             if update_id is not None:
                 last_consumed_update_id = update_id
 
         if last_consumed_update_id is not None:
             self._set_state("bot_update_offset", str(last_consumed_update_id + 1))
-        return {"items": items, "channels": self.list_channels(group_id), "skipped": skipped}
+        for group_id in normalized_group_ids:
+            per_group[group_id]["channels"] = self.list_channels(group_id)
+        return {"groups": [per_group[group_id] for group_id in normalized_group_ids]}
 
     async def _download_bot_media(
         self,
@@ -617,6 +672,18 @@ class TelegramMirrorService:
                     _utc_now(),
                 ),
             )
+
+    @staticmethod
+    def _normalize_group_ids(group_ids: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for group_id in group_ids:
+            value = str(group_id)
+            if not value.isdigit() or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
 
     def _list_all_channels(self) -> list[dict[str, Any]]:
         with self._connect() as conn:

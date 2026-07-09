@@ -412,6 +412,24 @@ class BackendClient:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
+    async def fetch_tg_latest_groups(self, group_ids: list[str], limit: int = 5) -> dict[str, Any]:
+        try:
+            response = await self._client.post(
+                "/api/tg/fetch-latest-groups",
+                json={"group_ids": [str(group_id) for group_id in group_ids], "limit": int(limit)},
+                headers=self._headers(),
+                timeout=300.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "Telegram 媒体拉取失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "TG_FETCH_FAILED")
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
     async def download_file(self, job_id: str, dest_path: str | Path) -> Path:
         dest = Path(dest_path)
         dest.parent.mkdir(parents=True, exist_ok=True)

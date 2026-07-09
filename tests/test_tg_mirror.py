@@ -58,6 +58,101 @@ async def test_bot_mode_bind_channel_without_api_id(tmp_path) -> None:
     assert service.list_channels("10001")[0]["channel_title"] == "example_channel"
 
 
+@pytest.mark.asyncio
+async def test_bot_mode_fetch_latest_for_groups_records_same_message_per_group(tmp_path, monkeypatch) -> None:
+    service = TelegramMirrorService(
+        TelegramMirrorConfig(
+            data_dir=tmp_path,
+            enabled=True,
+            mode="bot",
+            bot_token="123456:secret",
+            max_file_bytes=100 * 1024 * 1024,
+        )
+    )
+    service.initialize()
+    await service.bind_channel("10001", "example_channel")
+    await service.bind_channel("10002", "example_channel")
+
+    async def fake_bot_api_json(method, params=None):
+        assert method == "getUpdates"
+        return {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 11,
+                    "channel_post": {
+                        "message_id": 42,
+                        "date": 1783330950,
+                        "caption": "hello",
+                        "chat": {
+                            "id": -100123456,
+                            "username": "example_channel",
+                            "title": "Example Channel",
+                        },
+                        "photo": [{"file_id": "photo-file-id", "file_size": 12}],
+                    },
+                }
+            ],
+        }
+
+    async def fake_download_bot_media(channel, message, media):
+        target_path = tmp_path / f"{channel['group_id']}-{message['message_id']}.jpg"
+        target_path.write_bytes(b"fake image")
+        with service._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO tg_messages (
+                    group_id, channel_id, message_id, media_type, file_path, file_size, status, created_at, fetched_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'downloaded', ?, ?)
+                """,
+                (
+                    str(channel["group_id"]),
+                    str(channel["channel_id"]),
+                    int(message["message_id"]),
+                    str(media["media_type"]),
+                    str(target_path),
+                    target_path.stat().st_size,
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id FROM tg_messages
+                WHERE group_id = ? AND channel_id = ? AND message_id = ?
+                """,
+                (str(channel["group_id"]), str(channel["channel_id"]), int(message["message_id"])),
+            ).fetchone()
+        return {
+            "id": int(row["id"]) if row else 0,
+            "channel_id": str(channel["channel_id"]),
+            "channel_title": str(channel["channel_title"]),
+            "message_id": int(message["message_id"]),
+            "media_type": str(media["media_type"]),
+            "file_path": str(target_path),
+            "filename": target_path.name,
+            "file_size": target_path.stat().st_size,
+            "caption": "hello",
+            "message_url": "https://t.me/example_channel/42",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(service, "_bot_api_json", fake_bot_api_json)
+    monkeypatch.setattr(service, "_download_bot_media", fake_download_bot_media)
+
+    result = await service.fetch_latest_for_groups(["10001", "10002"], 5)
+
+    by_group = {group["group_id"]: group for group in result["groups"]}
+    assert [item["message_id"] for item in by_group["10001"]["items"]] == [42]
+    assert [item["message_id"] for item in by_group["10002"]["items"]] == [42]
+    assert by_group["10001"]["channels"][0]["channel_id"] == "-100123456"
+    assert by_group["10002"]["channels"][0]["channel_id"] == "-100123456"
+    assert service._message_seen("10001", "-100123456", 42)
+    assert service._message_seen("10002", "-100123456", 42)
+    assert service._get_state_int("bot_update_offset") == 12
+
+
 def test_bot_message_media_selects_largest_photo_and_video_extension() -> None:
     media = _bot_message_media(
         {

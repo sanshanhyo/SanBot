@@ -63,6 +63,7 @@ class FakeCreateBackend:
         self.jav_force_refreshes: list[bool] = []
         self.tg_bound_refs: list[tuple[str, str]] = []
         self.tg_fetches: list[tuple[str, int]] = []
+        self.tg_group_fetches: list[tuple[list[str], int]] = []
         self.tg_groups: list[str] = ["10001"]
         self.tg_channels: list[dict] = [
             {
@@ -77,6 +78,7 @@ class FakeCreateBackend:
             }
         ]
         self.tg_items: list[dict] = []
+        self.tg_items_by_group: dict[str, list[dict]] = {}
         self.cancelled: list[str] = []
         self.admin_cancellations: list[str] = []
         self.active_queries: list[tuple[str, str]] = []
@@ -240,6 +242,22 @@ class FakeCreateBackend:
     async def fetch_tg_latest(self, group_id: str, limit: int = 5) -> dict:
         self.tg_fetches.append((group_id, limit))
         return {"channels": self.tg_channels, "items": self.tg_items, "skipped": 0}
+
+    async def fetch_tg_latest_groups(self, group_ids: list[str], limit: int = 5) -> dict:
+        group_id_list = [str(group_id) for group_id in group_ids]
+        self.tg_group_fetches.append((group_id_list, limit))
+        groups = []
+        for group_id in group_id_list:
+            channels = [
+                channel
+                for channel in self.tg_channels
+                if str(channel.get("group_id") or group_id) == group_id
+            ]
+            if not channels and self.tg_channels:
+                channels = [dict(self.tg_channels[0], group_id=group_id)]
+            items = self.tg_items_by_group.get(group_id, self.tg_items)
+            groups.append({"group_id": group_id, "channels": channels, "items": items, "skipped": 0})
+        return {"groups": groups}
 
     async def create_job(
         self,
@@ -1043,7 +1061,8 @@ async def test_tg_auto_fetch_sends_new_media_silently(tmp_path: Path) -> None:
         backend,  # type: ignore[arg-type]
     )
 
-    assert backend.tg_fetches == [("10001", 3)]
+    assert backend.tg_fetches == []
+    assert backend.tg_group_fetches == [(["10001"], 3)]
     assert result == {"groups": 1, "sent": 1, "failed": 0}
     assert [message for _group, message in napcat.sent] == ["hello", f"IMAGE:{media_path.resolve()}"]
 
@@ -1060,9 +1079,69 @@ async def test_tg_auto_fetch_no_media_is_silent(tmp_path: Path) -> None:
         backend,  # type: ignore[arg-type]
     )
 
-    assert backend.tg_fetches == [("10001", 5)]
+    assert backend.tg_fetches == []
+    assert backend.tg_group_fetches == [(["10001"], 5)]
     assert result == {"groups": 1, "sent": 0, "failed": 0}
     assert napcat.sent == []
+
+
+@pytest.mark.asyncio
+async def test_tg_auto_fetch_sends_same_channel_media_to_every_bound_group(tmp_path: Path) -> None:
+    media_path = tmp_path / "tg.jpg"
+    media_path.write_bytes(b"fake image")
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.tg_groups = ["10001", "10002", "10003"]
+    backend.tg_channels = [
+        {
+            "id": index,
+            "group_id": group_id,
+            "channel_ref": "example_channel",
+            "channel_id": "-100123456",
+            "channel_title": "Example Channel",
+            "enabled": True,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
+        for index, group_id in enumerate(backend.tg_groups, start=1)
+    ]
+    backend.tg_items_by_group = {
+        group_id: [
+            {
+                "id": index,
+                "channel_id": "-100123456",
+                "channel_title": "Example Channel",
+                "message_id": 42,
+                "media_type": "image",
+                "file_path": str(media_path),
+                "filename": "tg.jpg",
+                "file_size": media_path.stat().st_size,
+                "caption": f"hello {group_id}",
+                "message_url": "https://t.me/example_channel/42",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+        for index, group_id in enumerate(backend.tg_groups, start=1)
+    }
+    settings = replace(
+        _settings(tmp_path),
+        allowed_group_ids=set(backend.tg_groups),
+        tg_mirror_allowed_group_ids=set(backend.tg_groups),
+        enable_tg_auto_fetch=True,
+        tg_auto_fetch_limit=3,
+    )
+
+    result = await bot_main._run_tg_auto_fetch_once(
+        settings,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+    )
+
+    assert backend.tg_group_fetches == [(["10001", "10002", "10003"], 3)]
+    assert result == {"groups": 3, "sent": 3, "failed": 0}
+    for group_id in backend.tg_groups:
+        assert (group_id, f"hello {group_id}") in napcat.sent
+        assert (group_id, f"IMAGE:{media_path.resolve()}") in napcat.sent
 
 
 @pytest.mark.asyncio

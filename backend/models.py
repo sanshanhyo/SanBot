@@ -177,6 +177,11 @@ class TelegramFetchRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=10)
 
 
+class TelegramGroupedFetchRequest(BaseModel):
+    group_ids: list[str] = Field(min_length=1, max_length=100)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
 class TelegramMediaItem(BaseModel):
     id: int
     channel_id: str
@@ -195,3 +200,14 @@ class TelegramFetchResponse(BaseModel):
     items: list[TelegramMediaItem] = Field(default_factory=list)
     channels: list[TelegramChannelResponse] = Field(default_factory=list)
     skipped: int = 0
+
+
+class TelegramGroupFetchResponse(BaseModel):
+    group_id: str
+    items: list[TelegramMediaItem] = Field(default_factory=list)
+    channels: list[TelegramChannelResponse] = Field(default_factory=list)
+    skipped: int = 0
+
+
+class TelegramGroupedFetchResponse(BaseModel):
+    groups: list[TelegramGroupFetchResponse] = Field(default_factory=list)

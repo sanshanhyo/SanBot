@@ -1236,16 +1236,24 @@ async def _run_tg_auto_fetch_once(
     groups = await _tg_auto_fetch_group_ids(settings, backend)
     sent = 0
     failed = 0
-    for group_id in groups:
-        try:
-            payload = await backend.fetch_tg_latest(group_id, settings.tg_auto_fetch_limit)
-        except BackendError:
-            failed += 1
-            logger.warning("Automatic Telegram fetch failed for group_id=%s.", group_id, exc_info=True)
-            continue
+    if not groups:
+        return {"groups": 0, "sent": 0, "failed": 0}
 
-        channels = payload.get("channels") if isinstance(payload, dict) else []
-        items = payload.get("items") if isinstance(payload, dict) else []
+    try:
+        payload = await backend.fetch_tg_latest_groups(groups, settings.tg_auto_fetch_limit)
+    except BackendError:
+        failed = len(groups)
+        logger.warning("Automatic Telegram batch fetch failed for groups=%s.", ",".join(groups), exc_info=True)
+        return {"groups": len(groups), "sent": sent, "failed": failed}
+
+    group_results = payload.get("groups") if isinstance(payload, dict) else []
+    safe_group_results = [item for item in group_results if isinstance(item, dict)] if isinstance(group_results, list) else []
+    for group_result in safe_group_results:
+        group_id = str(group_result.get("group_id") or "")
+        if group_id not in groups:
+            continue
+        channels = group_result.get("channels")
+        items = group_result.get("items")
         safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
         safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
         if not safe_channels or not safe_items:
