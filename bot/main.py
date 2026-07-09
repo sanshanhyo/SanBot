@@ -1221,8 +1221,8 @@ async def monitor_tg_auto_fetch(
 ) -> None:
     interval = max(60, settings.tg_auto_fetch_interval_seconds)
     while True:
-        await asyncio.sleep(interval)
         await _run_tg_auto_fetch_once(settings, napcat, backend)
+        await asyncio.sleep(interval)
 
 
 async def _run_tg_auto_fetch_once(
