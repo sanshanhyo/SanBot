@@ -378,6 +378,22 @@ class BackendClient:
             raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
         return response.json()
 
+    async def list_tg_groups(self) -> dict[str, Any]:
+        try:
+            response = await self._client.get(
+                "/api/tg/groups",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = self._detail(exc.response)
+            message = self._error_detail_message(exc.response) or "Telegram 群列表获取失败，请稍后再试"
+            error_code = str(detail.get("error_code") or "TG_GROUP_LIST_FAILED")
+            raise BackendError(message, error_code) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError("后端不可用，请稍后再试", "BACKEND_UNAVAILABLE") from exc
+        return response.json()
+
     async def fetch_tg_latest(self, group_id: str, limit: int = 5) -> dict[str, Any]:
         try:
             response = await self._client.post(

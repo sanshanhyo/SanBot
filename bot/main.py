@@ -194,6 +194,10 @@ class BotSettings:
     missav_max_group_members: int = DEFAULT_MISSAV_MAX_GROUP_MEMBERS
     enable_tg_mirror: bool = False
     tg_mirror_allowed_group_ids: set[str] = field(default_factory=set)
+    enable_tg_auto_fetch: bool = False
+    tg_auto_fetch_group_ids: set[str] = field(default_factory=set)
+    tg_auto_fetch_interval_seconds: int = 3600
+    tg_auto_fetch_limit: int = 5
     enable_history: bool = True
     history_allowed_group_ids: set[str] = field(default_factory=set)
     enable_admin_commands: bool = True
@@ -324,6 +328,10 @@ class BotSettings:
             missav_max_group_members=max(0, _env_int("MISSAV_MAX_GROUP_MEMBERS", DEFAULT_MISSAV_MAX_GROUP_MEMBERS)),
             enable_tg_mirror=_env_bool("ENABLE_TG_MIRROR", False),
             tg_mirror_allowed_group_ids=_env_id_set("TG_MIRROR_ALLOWED_GROUP_IDS"),
+            enable_tg_auto_fetch=_env_bool("ENABLE_TG_AUTO_FETCH", False),
+            tg_auto_fetch_group_ids=_env_id_set("TG_AUTO_FETCH_GROUP_IDS"),
+            tg_auto_fetch_interval_seconds=max(60, _env_int("TG_AUTO_FETCH_INTERVAL_SECONDS", 3600)),
+            tg_auto_fetch_limit=max(1, min(10, _env_int("TG_AUTO_FETCH_LIMIT", 5))),
             enable_history=_env_bool("ENABLE_HISTORY", True),
             history_allowed_group_ids=_env_id_set("HISTORY_ALLOWED_GROUP_IDS"),
             enable_admin_commands=_env_bool("ENABLE_ADMIN_COMMANDS", True),
@@ -1204,6 +1212,80 @@ async def _handle_tg_latest_command(
             failed += 1
             logger.exception("Telegram media file is not readable: %s", item.get("file_path"))
     await _safe_send(napcat, group_id, lang_text(LangKey.TG_FETCH_DONE, sent=sent, failed=failed))
+
+
+async def monitor_tg_auto_fetch(
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    interval = max(60, settings.tg_auto_fetch_interval_seconds)
+    while True:
+        await asyncio.sleep(interval)
+        await _run_tg_auto_fetch_once(settings, napcat, backend)
+
+
+async def _run_tg_auto_fetch_once(
+    settings: BotSettings,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> dict[str, int]:
+    if not settings.enable_tg_auto_fetch or not settings.enable_tg_mirror:
+        return {"groups": 0, "sent": 0, "failed": 0}
+
+    groups = await _tg_auto_fetch_group_ids(settings, backend)
+    sent = 0
+    failed = 0
+    for group_id in groups:
+        try:
+            payload = await backend.fetch_tg_latest(group_id, settings.tg_auto_fetch_limit)
+        except BackendError:
+            failed += 1
+            logger.warning("Automatic Telegram fetch failed for group_id=%s.", group_id, exc_info=True)
+            continue
+
+        channels = payload.get("channels") if isinstance(payload, dict) else []
+        items = payload.get("items") if isinstance(payload, dict) else []
+        safe_channels = [item for item in channels if isinstance(item, dict)] if isinstance(channels, list) else []
+        safe_items = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+        if not safe_channels or not safe_items:
+            continue
+
+        for item in safe_items:
+            try:
+                await _send_tg_media_item(group_id, item, napcat)
+                sent += 1
+            except (NapCatAPIError, OSError):
+                failed += 1
+                logger.exception("Automatic Telegram media forward failed for group_id=%s item_id=%s.", group_id, item.get("id"))
+
+    if sent or failed:
+        logger.info("Automatic Telegram fetch finished: groups=%s sent=%s failed=%s.", len(groups), sent, failed)
+    return {"groups": len(groups), "sent": sent, "failed": failed}
+
+
+async def _tg_auto_fetch_group_ids(settings: BotSettings, backend: BackendClient) -> list[str]:
+    if settings.tg_auto_fetch_group_ids:
+        candidates = set(settings.tg_auto_fetch_group_ids)
+    else:
+        try:
+            payload = await backend.list_tg_groups()
+        except BackendError:
+            logger.warning("Could not list Telegram auto-fetch groups.", exc_info=True)
+            candidates = set()
+        else:
+            groups = payload.get("groups") if isinstance(payload, dict) else []
+            candidates = {str(group_id) for group_id in groups if str(group_id).isdigit()} if isinstance(groups, list) else set()
+
+        if not candidates:
+            candidates = set(settings.tg_mirror_allowed_group_ids or settings.allowed_group_ids)
+
+    return [
+        group_id
+        for group_id in sorted(candidates)
+        if _is_group_allowed(group_id, settings)
+        and _is_feature_allowed(group_id, settings.enable_tg_mirror, settings.tg_mirror_allowed_group_ids)
+    ]
 
 
 def _format_tg_channel_list(channels: list[dict[str, Any]]) -> str:
@@ -4028,6 +4110,8 @@ async def run_bot() -> None:
     ) as backend:
         if settings.health_check_interval_seconds > 0:
             _spawn_task(pending_tasks, monitor_health(settings, napcat, backend))
+        if settings.enable_tg_auto_fetch and settings.enable_tg_mirror:
+            _spawn_task(pending_tasks, monitor_tg_auto_fetch(settings, napcat, backend))
         try:
             async for event in napcat.iter_events():
                 _spawn_task(

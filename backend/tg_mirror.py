@@ -193,6 +193,17 @@ class TelegramMirrorService:
             ).fetchall()
         return [_channel_row_to_dict(row) for row in rows]
 
+    def list_group_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT group_id FROM tg_channels
+                WHERE enabled = 1
+                ORDER BY group_id
+                """
+            ).fetchall()
+        return [str(row["group_id"]) for row in rows if str(row["group_id"]).isdigit()]
+
     async def fetch_latest(self, group_id: str, limit: int) -> dict[str, Any]:
         self._require_enabled()
         await self.cleanup_media_cache()

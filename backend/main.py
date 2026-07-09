@@ -37,6 +37,7 @@ from .models import (
     TelegramChannelResponse,
     TelegramFetchRequest,
     TelegramFetchResponse,
+    TelegramGroupListResponse,
 )
 from .javlibrary_service import JavLibraryService, JavLibraryServiceConfig, JavLibraryServiceError
 from .task_manager import ActiveJobLimitError, DuplicateJobError, JobManager, JobManagerConfig
@@ -663,6 +664,16 @@ async def list_tg_channels(
     _require_api_token(request, authorization)
     channels = await asyncio.to_thread(_tg_mirror_service(request).list_channels, group_id)
     return TelegramChannelListResponse(channels=[TelegramChannelResponse(**channel) for channel in channels])
+
+
+@app.get("/api/tg/groups", response_model=TelegramGroupListResponse)
+async def list_tg_groups(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> TelegramGroupListResponse:
+    _require_api_token(request, authorization)
+    groups = await asyncio.to_thread(_tg_mirror_service(request).list_group_ids)
+    return TelegramGroupListResponse(groups=groups)
 
 
 @app.post("/api/tg/fetch-latest", response_model=TelegramFetchResponse)

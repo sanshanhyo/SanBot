@@ -63,6 +63,7 @@ class FakeCreateBackend:
         self.jav_force_refreshes: list[bool] = []
         self.tg_bound_refs: list[tuple[str, str]] = []
         self.tg_fetches: list[tuple[str, int]] = []
+        self.tg_groups: list[str] = ["10001"]
         self.tg_channels: list[dict] = [
             {
                 "id": 1,
@@ -232,6 +233,9 @@ class FakeCreateBackend:
 
     async def list_tg_channels(self, group_id: str) -> dict:
         return {"channels": self.tg_channels}
+
+    async def list_tg_groups(self) -> dict:
+        return {"groups": self.tg_groups}
 
     async def fetch_tg_latest(self, group_id: str, limit: int = 5) -> dict:
         self.tg_fetches.append((group_id, limit))
@@ -1004,6 +1008,61 @@ async def test_tg_media_without_caption_sends_no_extra_description(tmp_path: Pat
         f"IMAGE:{media_path.resolve()}",
         "TG 拉取完成：已发送 1 个，失败 0 个。",
     ]
+
+
+@pytest.mark.asyncio
+async def test_tg_auto_fetch_sends_new_media_silently(tmp_path: Path) -> None:
+    media_path = tmp_path / "tg.jpg"
+    media_path.write_bytes(b"fake image")
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    backend.tg_items = [
+        {
+            "id": 7,
+            "channel_id": "-100123456",
+            "channel_title": "Example Channel",
+            "message_id": 42,
+            "media_type": "image",
+            "file_path": str(media_path),
+            "filename": "tg.jpg",
+            "file_size": media_path.stat().st_size,
+            "caption": "hello",
+            "message_url": "https://t.me/example_channel/42",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+    settings = replace(
+        _settings(tmp_path),
+        enable_tg_auto_fetch=True,
+        tg_auto_fetch_limit=3,
+    )
+
+    result = await bot_main._run_tg_auto_fetch_once(
+        settings,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+    )
+
+    assert backend.tg_fetches == [("10001", 3)]
+    assert result == {"groups": 1, "sent": 1, "failed": 0}
+    assert [message for _group, message in napcat.sent] == ["hello", f"IMAGE:{media_path.resolve()}"]
+
+
+@pytest.mark.asyncio
+async def test_tg_auto_fetch_no_media_is_silent(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(_settings(tmp_path), enable_tg_auto_fetch=True)
+
+    result = await bot_main._run_tg_auto_fetch_once(
+        settings,
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+    )
+
+    assert backend.tg_fetches == [("10001", 5)]
+    assert result == {"groups": 1, "sent": 0, "failed": 0}
+    assert napcat.sent == []
 
 
 @pytest.mark.asyncio

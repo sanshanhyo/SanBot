@@ -168,6 +168,10 @@ class TelegramChannelListResponse(BaseModel):
     channels: list[TelegramChannelResponse] = Field(default_factory=list)
 
 
+class TelegramGroupListResponse(BaseModel):
+    groups: list[str] = Field(default_factory=list)
+
+
 class TelegramFetchRequest(BaseModel):
     group_id: str = Field(pattern=r"^\d+$")
     limit: int = Field(default=5, ge=1, le=10)
