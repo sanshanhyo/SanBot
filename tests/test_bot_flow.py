@@ -798,9 +798,34 @@ async def test_help_and_features_commands(tmp_path: Path) -> None:
         TaskCollector(),
     )
 
-    assert "SanBot 帮助" in napcat.sent[-2][1]
-    assert "@我 演员搜索 演员名" in napcat.sent[-2][1]
+    help_message = napcat.sent[-2][1]
+    assert help_message.startswith("IMAGE:")
+    help_image = Path(help_message.removeprefix("IMAGE:"))
+    assert help_image == (tmp_path / "assets" / "main.png").resolve()
+    assert help_image.stat().st_size == bot_main.HELP_IMAGE_PATH.stat().st_size
     assert "当前功能" in napcat.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_help_falls_back_to_text_when_image_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    napcat = FakeNapCat()
+    monkeypatch.setattr(bot_main, "HELP_IMAGE_PATH", tmp_path / "missing.png")
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 帮助"}},
+            ]
+        ),
+        _settings(tmp_path),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        FakeCreateBackend(),  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert "SanBot 帮助" in napcat.sent[-1][1]
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,6 @@ __pycache__
 .env
 data
 logs
-assets
 docs
 config/jmcomic-option.yml
 config/javlibrary-option.yml

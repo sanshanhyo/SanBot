@@ -16,6 +16,7 @@ COPY bot ./bot
 COPY javlibrary_crawler ./javlibrary_crawler
 COPY config ./config
 COPY i18n ./i18n
+COPY assets ./assets
 
 RUN python -m pip install --upgrade pip \
     && python -m pip install -e . \

@@ -59,6 +59,7 @@ COVER_SEND_RETRIES = 1
 COVER_DOWNLOAD_TIMEOUT_SECONDS = 20
 MAX_COVER_IMAGE_BYTES = 8 * 1024 * 1024
 GROUP_ADMIN_ROLES = {"owner", "admin"}
+HELP_IMAGE_PATH = Path(__file__).resolve().parents[1] / "assets" / "main.png"
 
 
 class UploadPreparationError(Exception):
@@ -792,7 +793,7 @@ async def handle_group_message(
         return
 
     if parse_result.action == ParseAction.HELP:
-        await _safe_send(napcat, group_id, lang_text(LangKey.HELP_MESSAGE))
+        await _send_help(group_id, settings, napcat)
         return
 
     if parse_result.action == ParseAction.FEATURES:
@@ -4046,6 +4047,37 @@ async def _safe_send(napcat: NapCatClient, group_id: str, message: str) -> None:
         await napcat.send_group_msg(group_id, message)
     except NapCatAPIError:
         logger.exception("Could not send group message.")
+
+
+async def _send_help(group_id: str, settings: BotSettings, napcat: NapCatClient) -> None:
+    try:
+        image_path = await asyncio.to_thread(_prepare_help_image, settings.data_dir)
+        await napcat.send_group_image(group_id, str(image_path))
+    except (NapCatAPIError, OSError):
+        logger.exception("Could not send the help image; falling back to text help.")
+        await _safe_send(napcat, group_id, lang_text(LangKey.HELP_MESSAGE))
+
+
+def _prepare_help_image(data_dir: Path) -> Path:
+    source = HELP_IMAGE_PATH.resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"help image not found: {source}")
+
+    target = (data_dir / "assets" / "main.png").resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        source_stat = source.stat()
+        target_stat = target.stat()
+        if source_stat.st_size == target_stat.st_size and source_stat.st_mtime_ns == target_stat.st_mtime_ns:
+            return target
+
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
 
 
 async def monitor_health(

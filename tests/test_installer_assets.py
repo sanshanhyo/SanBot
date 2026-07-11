@@ -57,6 +57,7 @@ def test_container_contains_jav_crawler_and_ffmpeg() -> None:
 
     assert "ffmpeg" in dockerfile
     assert "COPY javlibrary_crawler ./javlibrary_crawler" in dockerfile
+    assert "COPY assets ./assets" in dockerfile
 
 
 def test_readme_documents_one_line_install() -> None:
