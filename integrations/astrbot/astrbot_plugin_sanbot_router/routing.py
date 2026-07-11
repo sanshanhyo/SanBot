@@ -121,4 +121,3 @@ def is_sanbot_command(text: str) -> bool:
             ADMIN_CANCEL_RE,
         )
     )
-
