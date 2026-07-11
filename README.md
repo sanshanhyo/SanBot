@@ -43,7 +43,50 @@
 - OneBot 11 HTTP 和 WebSocket
 - 可用的 JMComic 配置文件
 
-## 快速开始
+## Linux 服务器一键安装
+
+适合第一次接触服务器的用户。在 Ubuntu、Debian 等常见 Linux 服务器的 SSH 终端中粘贴这一行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanshanhyo/SanBot/main/scripts/install.sh | sudo bash
+```
+
+安装器会打开中文向导。所有功能开关都只接受 `true` 或 `false`，直接按回车会使用显示出的推荐值。向导会依次说明机器人 QQ、群白名单、JM、JAV、预告片、剧照、MissAV、Telegram、性能和 WebUI 配置，不要求用户手写 Docker Compose。
+
+脚本会自动完成：
+
+- 安装 Docker 和 Docker Compose。
+- 下载 SanBot 与 NapCat 镜像并设置自动重启。
+- 生成带完整中文注释的 `/opt/sanbot/.env`。
+- 为后端、NapCat OneBot 和 NapCat WebUI 分别生成随机 Token。
+- 自动配置 OneBot 11 HTTP 服务端和 WebSocket 服务端。
+- 安装预告片转 MP4 所需的 `ffmpeg`。
+- 创建 `sanbot` 管理命令并检查后端是否启动成功。
+
+脚本完成后会直接显示 NapCat WebUI 地址和随机登录密码。用户只需打开该地址，在“QQ 登录”页面扫码，不需要再手动创建 HTTP 3000 或 WebSocket 3001。扫码成功后执行：
+
+```bash
+sanbot doctor
+sanbot close-webui
+```
+
+`doctor` 会检查后端、NapCat 登录状态、OneBot、Bot 容器和 `ffmpeg`；`close-webui` 会关闭 WebUI 的公网入口。常用管理命令：
+
+```bash
+sanbot status
+sanbot logs bot
+sanbot logs napcat
+sanbot config
+sanbot restart
+sanbot update
+sanbot backup
+```
+
+再次运行同一条一键安装命令时，向导默认保留现有 Cookie、Token、功能开关、白名单和 SQLite 数据库，只更新配置模板、Compose 与容器镜像。旧配置会先保存为带时间戳的备份。
+
+QQ 扫码和受保护站点 Cookie 必须由账号本人提供，安装器不会把这些登录信息上传到 GitHub。NapCat 的 3000/3001 端口只在 Docker 内部网络使用，不会映射到公网。
+
+## Windows 本地运行
 
 克隆项目后，先创建虚拟环境并安装依赖：
 
