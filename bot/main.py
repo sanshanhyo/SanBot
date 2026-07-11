@@ -18,6 +18,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 import httpx
 
 from .backend_client import BackendClient, BackendError, DuplicateJobError, JobLimitError
+from .llm_service import LLMChatConfig, LLMChatService, LLMResult, create_llm_service
 from .message_parser import (
     ParseAction,
     normalize_message_segments,
@@ -42,6 +43,10 @@ DEFAULT_UPLOAD_RETRIES = 5
 DEFAULT_SEARCH_RESULT_LIMIT = 5
 DEFAULT_RANKING_RESULT_LIMIT = 10
 DEFAULT_USER_COMMAND_COOLDOWN_SECONDS = 10
+DEFAULT_LLM_SYSTEM_PROMPT = (
+    "你是 SanBot，一名自然、友善且有分寸的 QQ 群友。回答应简短、准确，不要刷屏；"
+    "不知道时坦率说明，不要编造事实，也不要声称执行了并未执行的操作。"
+)
 DEFAULT_JAV_ACTION_TIMEOUT_SECONDS = 300
 DEFAULT_JAV_TRAILER_CONVERT_TIMEOUT_SECONDS = 180
 DEFAULT_JAV_TRAILER_MAX_BYTES = 100 * 1024 * 1024
@@ -101,6 +106,17 @@ def load_dotenv(path: str | Path = ".env") -> None:
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if not value:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid number for %s; using %s.", name, default)
         return default
     try:
         return int(value)
@@ -210,6 +226,29 @@ class BotSettings:
     bot_display_name: str = "SanBot"
     manager_name: str = "管理者"
     manager_qq: str = "未配置"
+    enable_llm_chat: bool = False
+    llm_chat_allowed_group_ids: set[str] = field(default_factory=set)
+    llm_api_base_url: str = "https://api.deepseek.com/v1"
+    llm_api_key: str | None = None
+    llm_model: str = ""
+    llm_system_prompt: str = DEFAULT_LLM_SYSTEM_PROMPT
+    llm_timeout_seconds: int = 60
+    llm_max_concurrent_requests: int = 2
+    llm_context_messages: int = 12
+    llm_context_ttl_seconds: int = 3600
+    llm_max_output_tokens: int = 1000
+    llm_temperature: float = 0.8
+    llm_max_input_chars: int = 2000
+    llm_max_reply_chars: int = 3000
+    llm_user_cooldown_seconds: int = 10
+    llm_daily_group_limit: int = 100
+    enable_llm_ambient_chat: bool = False
+    llm_ambient_allowed_group_ids: set[str] = field(default_factory=set)
+    llm_ambient_reply_probability: float = 0.03
+    llm_ambient_group_cooldown_seconds: int = 600
+    llm_ambient_daily_limit: int = 30
+    llm_ambient_min_delay_seconds: float = 2.0
+    llm_ambient_max_delay_seconds: float = 8.0
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -344,6 +383,41 @@ class BotSettings:
             bot_display_name=os.getenv("BOT_DISPLAY_NAME") or "SanBot",
             manager_name=os.getenv("BOT_MANAGER_NAME") or "管理者",
             manager_qq=manager_qq,
+            enable_llm_chat=_env_bool("ENABLE_LLM_CHAT", False),
+            llm_chat_allowed_group_ids=_env_id_set("LLM_CHAT_ALLOWED_GROUP_IDS"),
+            llm_api_base_url=(os.getenv("LLM_API_BASE_URL") or "https://api.deepseek.com/v1").rstrip("/"),
+            llm_api_key=os.getenv("LLM_API_KEY") or None,
+            llm_model=(os.getenv("LLM_MODEL") or "").strip(),
+            llm_system_prompt=os.getenv("LLM_SYSTEM_PROMPT") or DEFAULT_LLM_SYSTEM_PROMPT,
+            llm_timeout_seconds=max(5, _env_int("LLM_TIMEOUT_SECONDS", 60)),
+            llm_max_concurrent_requests=max(1, min(10, _env_int("LLM_MAX_CONCURRENT_REQUESTS", 2))),
+            llm_context_messages=max(2, min(40, _env_int("LLM_CONTEXT_MESSAGES", 12))),
+            llm_context_ttl_seconds=max(60, _env_int("LLM_CONTEXT_TTL_SECONDS", 3600)),
+            llm_max_output_tokens=max(64, min(8192, _env_int("LLM_MAX_OUTPUT_TOKENS", 1000))),
+            llm_temperature=min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.8))),
+            llm_max_input_chars=max(100, min(10000, _env_int("LLM_MAX_INPUT_CHARS", 2000))),
+            llm_max_reply_chars=max(100, min(10000, _env_int("LLM_MAX_REPLY_CHARS", 3000))),
+            llm_user_cooldown_seconds=max(0, _env_int("LLM_USER_COOLDOWN_SECONDS", 10)),
+            llm_daily_group_limit=max(0, _env_int("LLM_DAILY_GROUP_LIMIT", 100)),
+            enable_llm_ambient_chat=_env_bool("ENABLE_LLM_AMBIENT_CHAT", False),
+            llm_ambient_allowed_group_ids=_env_id_set("LLM_AMBIENT_ALLOWED_GROUP_IDS"),
+            llm_ambient_reply_probability=min(
+                1.0,
+                max(0.0, _env_float("LLM_AMBIENT_REPLY_PROBABILITY", 0.03)),
+            ),
+            llm_ambient_group_cooldown_seconds=max(
+                0,
+                _env_int("LLM_AMBIENT_GROUP_COOLDOWN_SECONDS", 600),
+            ),
+            llm_ambient_daily_limit=max(0, _env_int("LLM_AMBIENT_DAILY_LIMIT", 30)),
+            llm_ambient_min_delay_seconds=max(
+                0.0,
+                _env_float("LLM_AMBIENT_MIN_DELAY_SECONDS", 2.0),
+            ),
+            llm_ambient_max_delay_seconds=max(
+                0.0,
+                _env_float("LLM_AMBIENT_MAX_DELAY_SECONDS", 8.0),
+            ),
         )
 
 
@@ -512,6 +586,8 @@ def _is_jav_master_enabled(settings: BotSettings) -> bool:
 
 
 def _is_parse_action_allowed(group_id: str, action: ParseAction, settings: BotSettings) -> bool:
+    if action == ParseAction.LLM_RESET:
+        return _is_feature_allowed(group_id, settings.enable_llm_chat, settings.llm_chat_allowed_group_ids)
     if action == ParseAction.HISTORY:
         return _is_feature_allowed(group_id, settings.enable_history, settings.history_allowed_group_ids)
     if action == ParseAction.GROUP_HISTORY:
@@ -567,6 +643,7 @@ async def handle_group_message(
     napcat: NapCatClient,
     backend: BackendClient,
     spawn_task: Callable[[Awaitable[None]], None],
+    llm_service: LLMChatService | None = None,
 ) -> None:
     if event.get("message_type") != "group":
         return
@@ -729,6 +806,25 @@ async def handle_group_message(
 
     parse_result = parse_group_message(event, settings.bot_qq_id)
     if parse_result.action == ParseAction.IGNORE:
+        if (
+            llm_service is not None
+            and _is_feature_allowed(group_id, settings.enable_llm_chat, settings.llm_chat_allowed_group_ids)
+            and _is_feature_allowed(
+                group_id,
+                settings.enable_llm_ambient_chat,
+                settings.llm_ambient_allowed_group_ids,
+            )
+        ):
+            await _handle_ambient_llm_message(
+                event,
+                group_id,
+                user_id,
+                text_from_segments(event.get("message")),
+                bool(at_targets),
+                llm_service,
+                napcat,
+                backend,
+            )
         if at_targets:
             logger.info(
                 "Ignored group message because it did not match this bot or command: at_targets=%s bot_qq_id=%s text=%r",
@@ -751,11 +847,18 @@ async def handle_group_message(
         group_id,
         user_id,
     )
+    audit_action = parse_result.action.value
+    if (
+        parse_result.action == ParseAction.UNKNOWN
+        and llm_service is not None
+        and _is_feature_allowed(group_id, settings.enable_llm_chat, settings.llm_chat_allowed_group_ids)
+    ):
+        audit_action = "llm_chat"
     await _record_command_audit(
         backend,
         group_id,
         user_id,
-        parse_result.action.value,
+        audit_action,
         _audit_target(parse_result),
         "received",
         None,
@@ -781,6 +884,20 @@ async def handle_group_message(
         return
 
     if parse_result.action == ParseAction.UNKNOWN:
+        if (
+            llm_service is not None
+            and _is_feature_allowed(group_id, settings.enable_llm_chat, settings.llm_chat_allowed_group_ids)
+        ):
+            await _handle_explicit_llm_message(
+                event,
+                group_id,
+                user_id,
+                text_from_segments(event.get("message")),
+                llm_service,
+                napcat,
+                backend,
+            )
+            return
         await _safe_send(napcat, group_id, lang_text(LangKey.UNKNOWN_COMMAND))
         return
 
@@ -798,6 +915,15 @@ async def handle_group_message(
 
     if parse_result.action == ParseAction.FEATURES:
         await _safe_send(napcat, group_id, lang_text(LangKey.FEATURES_MESSAGE))
+        return
+
+    if parse_result.action == ParseAction.LLM_RESET:
+        if llm_service is None:
+            await _safe_send(napcat, group_id, lang_text(LangKey.LLM_NOT_CONFIGURED))
+            return
+        await llm_service.reset(group_id, user_id)
+        await _safe_send(napcat, group_id, lang_text(LangKey.LLM_RESET_DONE))
+        await _record_command_audit(backend, group_id, user_id, "llm_reset", None, "handled", None, 0)
         return
 
     if parse_result.action == ParseAction.HISTORY:
@@ -3230,6 +3356,9 @@ def _audit_command_label(command: str) -> str:
         "home": LangKey.AUDIT_COMMAND_HOME,
         "help": LangKey.AUDIT_COMMAND_HELP,
         "features": LangKey.AUDIT_COMMAND_FEATURES,
+        "llm_chat": LangKey.AUDIT_COMMAND_LLM_CHAT,
+        "llm_ambient": LangKey.AUDIT_COMMAND_LLM_AMBIENT,
+        "llm_reset": LangKey.AUDIT_COMMAND_LLM_RESET,
         "history": LangKey.AUDIT_COMMAND_HISTORY,
         "group_history": LangKey.AUDIT_COMMAND_GROUP_HISTORY,
         "usage": LangKey.AUDIT_COMMAND_USAGE,
@@ -4049,6 +4178,159 @@ async def _safe_send(napcat: NapCatClient, group_id: str, message: str) -> None:
         logger.exception("Could not send group message.")
 
 
+async def _safe_send_reply(
+    napcat: NapCatClient,
+    group_id: str,
+    message: str,
+    message_id: str | None,
+) -> None:
+    if not message_id:
+        await _safe_send(napcat, group_id, message)
+        return
+    segments = [
+        {"type": "reply", "data": {"id": message_id}},
+        {"type": "text", "data": {"text": message}},
+    ]
+    try:
+        await napcat.send_group_msg(group_id, segments)
+    except NapCatAPIError:
+        logger.exception("Could not send LLM group reply.")
+
+
+async def _send_llm_text(
+    napcat: NapCatClient,
+    group_id: str,
+    text: str,
+    message_id: str | None,
+) -> None:
+    chunks = _split_llm_reply(text, 1500)
+    for index, chunk in enumerate(chunks):
+        if index == 0:
+            await _safe_send_reply(napcat, group_id, chunk, message_id)
+        else:
+            await _safe_send(napcat, group_id, chunk)
+
+
+def _split_llm_reply(text: str, max_chars: int) -> list[str]:
+    remaining = text.strip()
+    if not remaining:
+        return []
+    chunks: list[str] = []
+    while len(remaining) > max_chars:
+        split_at = max(remaining.rfind("\n", 0, max_chars + 1), remaining.rfind("。", 0, max_chars + 1))
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        else:
+            split_at += 1
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _sender_display_name(event: dict[str, Any], user_id: str) -> str:
+    sender = event.get("sender")
+    if isinstance(sender, dict):
+        for key in ("card", "nickname"):
+            value = str(sender.get(key) or "").strip()
+            if value:
+                return value[:40]
+    return user_id
+
+
+async def _handle_explicit_llm_message(
+    event: dict[str, Any],
+    group_id: str,
+    user_id: str,
+    text: str,
+    llm_service: LLMChatService,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    started = time.monotonic()
+    result = await llm_service.explicit_reply(group_id, user_id, text)
+    message_id = str(event.get("message_id") or "") or None
+    if result.status == "ok" and result.text:
+        await _send_llm_text(napcat, group_id, result.text, message_id)
+        await _record_command_audit(
+            backend, group_id, user_id, "llm_chat", None, "handled", None, _duration_ms(started)
+        )
+        return
+
+    error_code = result.error_code or f"LLM_{result.status.upper()}"
+    if result.status == "cooldown":
+        await _safe_send(
+            napcat,
+            group_id,
+            lang_text(LangKey.LLM_COOLDOWN, seconds=result.retry_after or 1),
+        )
+    elif result.status == "daily_limit":
+        await _safe_send(napcat, group_id, lang_text(LangKey.LLM_DAILY_LIMIT))
+    elif result.status == "busy":
+        await _safe_send(napcat, group_id, lang_text(LangKey.LLM_BUSY))
+    elif result.status == "empty":
+        await _safe_send(napcat, group_id, lang_text(LangKey.LLM_EMPTY_INPUT))
+    else:
+        logger.warning("LLM explicit chat failed: error_code=%s group_id=%s user_id=%s", error_code, group_id, user_id)
+        await _safe_send(napcat, group_id, lang_text(LangKey.LLM_FAILED, error_code=error_code))
+    await _record_command_audit(
+        backend,
+        group_id,
+        user_id,
+        "llm_chat",
+        None,
+        "failed" if result.status == "error" else "blocked",
+        error_code,
+        _duration_ms(started),
+    )
+
+
+async def _handle_ambient_llm_message(
+    event: dict[str, Any],
+    group_id: str,
+    user_id: str,
+    text: str,
+    has_at: bool,
+    llm_service: LLMChatService,
+    napcat: NapCatClient,
+    backend: BackendClient,
+) -> None:
+    started = time.monotonic()
+    result = await llm_service.ambient_reply(
+        group_id=group_id,
+        user_id=user_id,
+        sender_name=_sender_display_name(event, user_id),
+        text=text,
+        has_at=has_at,
+    )
+    if result is None:
+        return
+    if result.status == "ok" and result.text:
+        message_id = str(event.get("message_id") or "") or None
+        await _send_llm_text(napcat, group_id, result.text, message_id)
+        await _record_command_audit(
+            backend, group_id, user_id, "llm_ambient", None, "handled", None, _duration_ms(started)
+        )
+        return
+    logger.warning(
+        "Ambient LLM chat failed silently: error_code=%s group_id=%s user_id=%s",
+        result.error_code,
+        group_id,
+        user_id,
+    )
+    await _record_command_audit(
+        backend,
+        group_id,
+        user_id,
+        "llm_ambient",
+        None,
+        "failed",
+        result.error_code or "LLM_AMBIENT_FAILED",
+        _duration_ms(started),
+    )
+
+
 async def _send_help(group_id: str, settings: BotSettings, napcat: NapCatClient) -> None:
     try:
         image_path = await asyncio.to_thread(_prepare_help_image, settings.data_dir)
@@ -4138,38 +4420,82 @@ async def run_bot() -> None:
 
     pending_tasks: set[asyncio.Task[None]] = set()
     state = BotState()
-    async with NapCatClient(
-        settings.napcat_ws_url,
-        settings.napcat_http_url,
-        settings.napcat_access_token,
-        request_timeout_seconds=settings.napcat_http_timeout_seconds,
-        upload_timeout_seconds=settings.napcat_upload_timeout_seconds,
-    ) as napcat, BackendClient(
-        settings.backend_url,
-        settings.backend_api_token,
-    ) as backend:
-        if settings.health_check_interval_seconds > 0:
-            _spawn_task(pending_tasks, monitor_health(settings, napcat, backend))
-        if settings.enable_tg_auto_fetch and settings.enable_tg_mirror:
-            _spawn_task(pending_tasks, monitor_tg_auto_fetch(settings, napcat, backend))
-        try:
-            async for event in napcat.iter_events():
-                _spawn_task(
-                    pending_tasks,
-                    handle_group_message(
-                        event,
-                        settings,
-                        state,
-                        napcat,
-                        backend,
-                        lambda awaitable: _spawn_task(pending_tasks, awaitable),
-                    ),
-                )
-        finally:
-            tasks = list(pending_tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+    llm_service = _build_llm_service(settings)
+    if llm_service is not None:
+        await llm_service.initialize()
+    try:
+        async with NapCatClient(
+            settings.napcat_ws_url,
+            settings.napcat_http_url,
+            settings.napcat_access_token,
+            request_timeout_seconds=settings.napcat_http_timeout_seconds,
+            upload_timeout_seconds=settings.napcat_upload_timeout_seconds,
+        ) as napcat, BackendClient(
+            settings.backend_url,
+            settings.backend_api_token,
+        ) as backend:
+            if settings.health_check_interval_seconds > 0:
+                _spawn_task(pending_tasks, monitor_health(settings, napcat, backend))
+            if settings.enable_tg_auto_fetch and settings.enable_tg_mirror:
+                _spawn_task(pending_tasks, monitor_tg_auto_fetch(settings, napcat, backend))
+            try:
+                async for event in napcat.iter_events():
+                    _spawn_task(
+                        pending_tasks,
+                        handle_group_message(
+                            event,
+                            settings,
+                            state,
+                            napcat,
+                            backend,
+                            lambda awaitable: _spawn_task(pending_tasks, awaitable),
+                            llm_service,
+                        ),
+                    )
+            finally:
+                tasks = list(pending_tasks)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        if llm_service is not None:
+            await llm_service.close()
+
+
+def _build_llm_service(settings: BotSettings) -> LLMChatService | None:
+    if not settings.enable_llm_chat:
+        return None
+    if not settings.llm_api_base_url or not settings.llm_model:
+        logger.warning("LLM chat is enabled but LLM_API_BASE_URL or LLM_MODEL is missing; LLM stays unavailable.")
+        return None
+    min_delay = min(settings.llm_ambient_min_delay_seconds, settings.llm_ambient_max_delay_seconds)
+    max_delay = max(settings.llm_ambient_min_delay_seconds, settings.llm_ambient_max_delay_seconds)
+    config = LLMChatConfig(
+        system_prompt=settings.llm_system_prompt,
+        bot_name=settings.bot_display_name,
+        context_messages=settings.llm_context_messages,
+        context_ttl_seconds=settings.llm_context_ttl_seconds,
+        user_cooldown_seconds=settings.llm_user_cooldown_seconds,
+        daily_group_limit=settings.llm_daily_group_limit,
+        max_concurrent_requests=settings.llm_max_concurrent_requests,
+        max_input_chars=settings.llm_max_input_chars,
+        max_reply_chars=settings.llm_max_reply_chars,
+        ambient_probability=settings.llm_ambient_reply_probability,
+        ambient_group_cooldown_seconds=settings.llm_ambient_group_cooldown_seconds,
+        ambient_daily_limit=settings.llm_ambient_daily_limit,
+        ambient_min_delay_seconds=min_delay,
+        ambient_max_delay_seconds=max_delay,
+    )
+    return create_llm_service(
+        config=config,
+        db_path=settings.data_dir / "llm.sqlite3",
+        base_url=settings.llm_api_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        timeout_seconds=settings.llm_timeout_seconds,
+        max_output_tokens=settings.llm_max_output_tokens,
+        temperature=settings.llm_temperature,
+    )
 
 
 def main() -> None:

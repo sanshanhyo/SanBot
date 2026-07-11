@@ -9,6 +9,7 @@ import pytest
 
 import bot.main as bot_main
 from bot.main import BotSettings, BotState, _download_and_upload, handle_group_message, monitor_job
+from bot.llm_service import LLMResult
 from bot.napcat_client import NapCatAPIError
 
 
@@ -391,6 +392,25 @@ class TaskCollector:
         awaitable.close()
 
 
+class FakeLLMService:
+    def __init__(self) -> None:
+        self.explicit_calls: list[tuple[str, str, str]] = []
+        self.ambient_calls: list[dict] = []
+        self.reset_calls: list[tuple[str, str]] = []
+
+    async def explicit_reply(self, group_id: str, user_id: str, text: str) -> LLMResult:
+        self.explicit_calls.append((group_id, user_id, text.strip()))
+        return LLMResult("ok", text="这是一条 AI 回复")
+
+    async def ambient_reply(self, **kwargs) -> LLMResult | None:
+        self.ambient_calls.append(kwargs)
+        return LLMResult("ok", text="我也来聊一句")
+
+    async def reset(self, group_id: str, user_id: str) -> int:
+        self.reset_calls.append((group_id, user_id))
+        return 2
+
+
 def _settings(tmp_path: Path, enable_search: bool = True) -> BotSettings:
     return BotSettings(
         bot_qq_id="12345",
@@ -636,6 +656,91 @@ async def test_handle_group_message_sends_unknown_for_unknown_command(tmp_path: 
 
     assert napcat.sent == [("10001", "我看不懂你在输入什么(つд⊂)！输入‘帮助’获取命令列表")]
     assert backend.created == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_at_message_uses_llm_when_enabled(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    llm = FakeLLMService()
+    event = _group_event(
+        [
+            {"type": "at", "data": {"qq": "12345"}},
+            {"type": "text", "data": {"text": " 今晚吃什么？"}},
+        ]
+    )
+    event["message_id"] = "9988"
+
+    await handle_group_message(
+        event,
+        replace(_settings(tmp_path), enable_llm_chat=True, llm_chat_allowed_group_ids={"10001"}),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+        llm,  # type: ignore[arg-type]
+    )
+
+    assert llm.explicit_calls == [("10001", "20001", "今晚吃什么？")]
+    assert napcat.sent[-1][1][0] == {"type": "reply", "data": {"id": "9988"}}
+    assert napcat.sent[-1][1][1]["data"]["text"] == "这是一条 AI 回复"
+    assert backend.audit_events[-1]["command"] == "llm_chat"
+
+
+@pytest.mark.asyncio
+async def test_plain_group_message_can_trigger_ambient_llm(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    llm = FakeLLMService()
+    event = _group_event([{"type": "text", "data": {"text": "你们觉得今晚吃什么？"}}])
+    event["message_id"] = "9989"
+    event["sender"] = {"role": "member", "card": "小明"}
+
+    await handle_group_message(
+        event,
+        replace(
+            _settings(tmp_path),
+            enable_llm_chat=True,
+            llm_chat_allowed_group_ids={"10001"},
+            enable_llm_ambient_chat=True,
+            llm_ambient_allowed_group_ids={"10001"},
+        ),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+        llm,  # type: ignore[arg-type]
+    )
+
+    assert llm.ambient_calls[0]["sender_name"] == "小明"
+    assert llm.ambient_calls[0]["has_at"] is False
+    assert napcat.sent[-1][1][1]["data"]["text"] == "我也来聊一句"
+    assert backend.audit_events[-1]["command"] == "llm_ambient"
+
+
+@pytest.mark.asyncio
+async def test_llm_reset_command_clears_user_session(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    llm = FakeLLMService()
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 重置对话"}},
+            ]
+        ),
+        replace(_settings(tmp_path), enable_llm_chat=True, llm_chat_allowed_group_ids={"10001"}),
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+        llm,  # type: ignore[arg-type]
+    )
+
+    assert llm.reset_calls == [("10001", "20001")]
+    assert "重新认识" in napcat.sent[-1][1]
 
 
 @pytest.mark.asyncio

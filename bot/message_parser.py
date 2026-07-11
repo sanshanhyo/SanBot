@@ -37,6 +37,7 @@ class ParseAction(StrEnum):
     HOME = "home"
     HELP = "help"
     FEATURES = "features"
+    LLM_RESET = "llm_reset"
     HISTORY = "history"
     GROUP_HISTORY = "group_history"
     USAGE = "usage"
@@ -242,6 +243,8 @@ def extract_control_action(message_segments: Any) -> ParseAction | None:
         return ParseAction.HELP
     if lowered in {"功能", "功能列表", "模块", "modules", "features"}:
         return ParseAction.FEATURES
+    if lowered in {"重置对话", "重置聊天", "ai重置", "llm重置", "reset chat"}:
+        return ParseAction.LLM_RESET
     if lowered in {"历史", "我的任务", "任务历史", "我的历史", "history"}:
         return ParseAction.HISTORY
     if lowered in {"最近任务", "群任务", "群历史", "最近历史", "group history"}:

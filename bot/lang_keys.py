@@ -176,6 +176,9 @@ class LangKey:
     AUDIT_COMMAND_HOME = 'audit_command_home'
     AUDIT_COMMAND_HELP = 'audit_command_help'
     AUDIT_COMMAND_FEATURES = 'audit_command_features'
+    AUDIT_COMMAND_LLM_CHAT = 'audit_command_llm_chat'
+    AUDIT_COMMAND_LLM_AMBIENT = 'audit_command_llm_ambient'
+    AUDIT_COMMAND_LLM_RESET = 'audit_command_llm_reset'
     AUDIT_COMMAND_HISTORY = 'audit_command_history'
     AUDIT_COMMAND_GROUP_HISTORY = 'audit_command_group_history'
     AUDIT_COMMAND_USAGE = 'audit_command_usage'
@@ -226,6 +229,13 @@ class LangKey:
     UPLOAD_ERROR_SPLIT_FAILED = 'upload_error_split_failed'
     HEALTH_FAILED = 'health_failed'
     HEALTH_RECOVERED = 'health_recovered'
+    LLM_NOT_CONFIGURED = 'llm_not_configured'
+    LLM_RESET_DONE = 'llm_reset_done'
+    LLM_COOLDOWN = 'llm_cooldown'
+    LLM_DAILY_LIMIT = 'llm_daily_limit'
+    LLM_BUSY = 'llm_busy'
+    LLM_EMPTY_INPUT = 'llm_empty_input'
+    LLM_FAILED = 'llm_failed'
 
 
 LANG_KEYS = frozenset(

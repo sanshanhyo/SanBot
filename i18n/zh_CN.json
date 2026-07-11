@@ -1,8 +1,8 @@
 {
   "usage": "用法：@我 JM123456",
   "bot_home": "👋 尼嚎！这里是「{bot_name}」！\n本机器人由 {manager_name}（QQ：{manager_qq}） 部署，很高兴为你服务！\n你可以在群聊中发送：\n@我 帮助：查看使用说明及指令列表\n@我 功能：查看机器人目前支持的全部功能\n本项目基于 NapCatQQ 开发，并整合了多个优秀的开源项目。你可以前往 GitHub 查看完整源码、项目依赖及部署说明。\n项目同时提供一键部署方案，你也可以自行部署机器人，并将其用于自己的群聊。\n项目地址：\n[https://github.com/sanshanhyo/SanBot](https://github.com/sanshanhyo/SanBot)\n开发者：@散山肆水HyO\n感谢你的使用，祝你使用愉快 🌹",
-  "help_message": "SanBot 帮助小抄(｡･ω･｡)ﾉ\n基础命令\n- `@我`：查看机器人介绍\n- `@我 帮助`：查看本帮助\n- `@我 功能`：查看功能总览\nJM 漫画\n- `@我 JM123456`：获取封面、标题、页数并确认下载\n- `@我 JM搜索 关键词`：搜索 JM 漫画\n- `@我 JM日榜` / `@我 JM周榜` / `@我 JM月榜`：查看 JM 排行榜\nAV 元数据\n- `@我 JAV SSIS-123`：查询番号信息\n- `@我 AV搜索 中文标题`：按标题搜索 JavDB 番号\n- `@我 演员搜索 演员名`：按演员搜索 JavDB 番号，我会顺手尝试中文译名喔\n- `@我 DB日榜` / `@我 DB周榜` / `@我 DB月榜`：查看 JavDB 排行榜\nTG 频道镜像（管理员）\n- `@我 TG绑定 https://t.me/频道名`：绑定本群要同步的 TG 频道\n- `@我 TG列表`：查看本群绑定频道\n- `@我 TG最新 5`：拉取最近未转发的图片/视频\n任务\n- `@我 我的任务`：查看你的最近任务\n下载确认时回复“下载”，放弃时回复“取消”。",
-  "features_message": "当前功能(ง •̀_•́)ง\n1. JM 漫画下载：`@我 JM123456`\n2. JM 关键词搜索：`@我 JM搜索 关键词`\n3. JM 排行榜：JM日榜 / JM周榜 / JM月榜\n4. 番号信息查询（多数据源）：`@我 JAV SSIS-123`\n5. JavDB 标题搜索、演员搜索与排行榜：AV搜索 / 演员搜索 / DB日榜 / DB周榜 / DB月榜\n6. TG 频道图片/视频手动转发：TG绑定 / TG列表 / TG最新\n7. 任务历史查询：`@我 我的任务`\n8. 管理员运维：状态 / 队列 / 审计 / 最近任务 / 取消 / 清理缓存",
+  "help_message": "SanBot 帮助小抄(｡･ω･｡)ﾉ\n基础命令\n- `@我`：查看机器人介绍\n- `@我 帮助`：查看本帮助\n- `@我 功能`：查看功能总览\n- `@我 想聊的内容`：开启 AI 对话（需要部署者启用）\n- `@我 重置对话`：清除你的 AI 对话上下文\nJM 漫画\n- `@我 JM123456`：获取封面、标题、页数并确认下载\n- `@我 JM搜索 关键词`：搜索 JM 漫画\n- `@我 JM日榜` / `@我 JM周榜` / `@我 JM月榜`：查看 JM 排行榜\nAV 元数据\n- `@我 JAV SSIS-123`：查询番号信息\n- `@我 AV搜索 中文标题`：按标题搜索 JavDB 番号\n- `@我 演员搜索 演员名`：按演员搜索 JavDB 番号，我会顺手尝试中文译名喔\n- `@我 DB日榜` / `@我 DB周榜` / `@我 DB月榜`：查看 JavDB 排行榜\nTG 频道镜像（管理员）\n- `@我 TG绑定 https://t.me/频道名`：绑定本群要同步的 TG 频道\n- `@我 TG列表`：查看本群绑定频道\n- `@我 TG最新 5`：拉取最近未转发的图片/视频\n任务\n- `@我 我的任务`：查看你的最近任务\n下载确认时回复“下载”，放弃时回复“取消”。",
+  "features_message": "当前功能(ง •̀_•́)ง\n1. JM 漫画下载：`@我 JM123456`\n2. JM 关键词搜索：`@我 JM搜索 关键词`\n3. JM 排行榜：JM日榜 / JM周榜 / JM月榜\n4. 番号信息查询（多数据源）：`@我 JAV SSIS-123`\n5. JavDB 标题搜索、演员搜索与排行榜：AV搜索 / 演员搜索 / DB日榜 / DB周榜 / DB月榜\n6. TG 频道图片/视频手动转发：TG绑定 / TG列表 / TG最新\n7. LLM 对话与群聊陪伴模式（需要部署者启用）\n8. 任务历史查询：`@我 我的任务`\n9. 管理员运维：状态 / 队列 / 审计 / 最近任务 / 取消 / 清理缓存",
   "user_history_header": "你的最近任务",
   "group_history_header": "本群最近任务",
   "user_history_empty": "额……你在本群还没有任务记录。",
@@ -201,6 +201,9 @@
   "audit_command_home": "首页",
   "audit_command_help": "帮助",
   "audit_command_features": "功能",
+  "audit_command_llm_chat": "AI 对话",
+  "audit_command_llm_ambient": "AI 陪伴回复",
+  "audit_command_llm_reset": "重置 AI 对话",
   "audit_command_history": "我的任务",
   "audit_command_group_history": "最近任务",
   "audit_command_usage": "用法提示",
@@ -250,5 +253,12 @@
   "upload_error_part_too_large": "PDF中存在单页过大的内容，无法继续拆分到可上传大小，请联系我的管理者QAQ",
   "upload_error_split_failed": "PDF拆分失败，请联系我的管理者QAQ",
   "health_failed": "健康监控：后端健康检查失败，请检查服务状态。",
-  "health_recovered": "健康监控：后端已恢复正常。"
+  "health_recovered": "健康监控：后端已恢复正常。",
+  "llm_not_configured": "AI 对话还没有配置好，请联系我的管理者。",
+  "llm_reset_done": "这段对话已经忘掉啦，我们重新认识一下吧 (｡･ω･｡)ﾉ",
+  "llm_cooldown": "让我喘口气，{seconds} 秒后再聊吧。",
+  "llm_daily_limit": "今天在这个群聊得有点多啦，明天再继续吧。",
+  "llm_busy": "我现在同时在想好几件事，请稍后再问一次。",
+  "llm_empty_input": "你想和我聊什么呀？",
+  "llm_failed": "刚才思考时出了点问题，请稍后再试。\n报错码：{error_code}"
 }

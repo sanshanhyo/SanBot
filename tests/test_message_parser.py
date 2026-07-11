@@ -106,6 +106,20 @@ def test_features_command_with_at() -> None:
     assert result.action == ParseAction.FEATURES
 
 
+def test_llm_reset_command_with_at() -> None:
+    result = parse_group_message(
+        _event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 重置对话"}},
+            ]
+        ),
+        bot_qq_id="12345",
+    )
+
+    assert result.action == ParseAction.LLM_RESET
+
+
 def test_history_command_with_at() -> None:
     result = parse_group_message(
         _event(
