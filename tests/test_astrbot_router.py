@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from integrations.astrbot.astrbot_plugin_sanbot_router.routing import (
+    ActiveReplyLimiter,
     is_sanbot_command,
 )
 
@@ -39,9 +40,31 @@ def test_normal_ai_chat_is_not_reserved_for_sanbot() -> None:
     assert not is_sanbot_command("SanBot 你在吗")
 
 
+def test_active_reply_limiter_enforces_cooldown_and_daily_limit() -> None:
+    limiter = ActiveReplyLimiter()
+
+    assert limiter.allow(
+        "10001", now=1000, day="2026-07-11", cooldown_seconds=600, daily_limit=2
+    )
+    assert not limiter.allow(
+        "10001", now=1200, day="2026-07-11", cooldown_seconds=600, daily_limit=2
+    )
+    assert limiter.allow(
+        "10001", now=1600, day="2026-07-11", cooldown_seconds=600, daily_limit=2
+    )
+    assert not limiter.allow(
+        "10001", now=2200, day="2026-07-11", cooldown_seconds=600, daily_limit=2
+    )
+    assert limiter.allow(
+        "10001", now=2200, day="2026-07-12", cooldown_seconds=600, daily_limit=2
+    )
+
+
 def test_astrbot_compose_binds_management_ports_to_localhost() -> None:
     root = Path(__file__).resolve().parents[1]
-    compose = yaml.safe_load((root / "integrations" / "astrbot" / "compose.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load(
+        (root / "integrations" / "astrbot" / "compose.yml").read_text(encoding="utf-8")
+    )
     ports = compose["services"]["astrbot"]["ports"]
 
     assert "127.0.0.1:6185:6185" in ports
@@ -52,16 +75,22 @@ def test_astrbot_compose_binds_management_ports_to_localhost() -> None:
 def test_production_plugin_example_uses_explicit_group_allowlist() -> None:
     root = Path(__file__).resolve().parents[1]
     config = json.loads(
-        (root / "integrations" / "astrbot" / "plugin-config.example.json").read_text(encoding="utf-8")
+        (root / "integrations" / "astrbot" / "plugin-config.example.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert set(config["allowed_group_ids"]) == {"904942764", "961552805", "706845140"}
+    assert config["active_reply_cooldown_seconds"] == 600
+    assert config["active_reply_daily_limit"] == 30
 
 
 def test_astrbot_overlay_enables_builtin_active_reply_for_allowlisted_groups() -> None:
     root = Path(__file__).resolve().parents[1]
     config = json.loads(
-        (root / "integrations" / "astrbot" / "config-overlay.example.json").read_text(encoding="utf-8")
+        (root / "integrations" / "astrbot" / "config-overlay.example.json").read_text(
+            encoding="utf-8"
+        )
     )
     active_reply = config["provider_ltm_settings"]["active_reply"]
 

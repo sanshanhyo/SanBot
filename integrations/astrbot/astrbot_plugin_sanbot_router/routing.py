@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 JM_DOWNLOAD_RE = re.compile(r"(?i)^\s*JM\s*\d{1,12}\s*$")
 JM_SEARCH_RE = re.compile(r"(?i)^\s*JM\s*(?:搜索|搜|查找)\b.*$", re.S)
@@ -14,7 +15,9 @@ ACTOR_SEARCH_RE = re.compile(
     r"\s*(?:搜索|搜|查找)?.*$",
     re.S,
 )
-TG_COMMAND_RE = re.compile(r"(?i)^\s*TG\s*(?:绑定|bind|列表|频道|订阅|最新|拉取|同步)\b.*$", re.S)
+TG_COMMAND_RE = re.compile(
+    r"(?i)^\s*TG\s*(?:绑定|bind|列表|频道|订阅|最新|拉取|同步)\b.*$", re.S
+)
 ADMIN_CANCEL_RE = re.compile(r"(?i)^\s*(?:取消|cancel)\s+.+$")
 
 EXACT_SANBOT_COMMANDS = {
@@ -89,6 +92,39 @@ PENDING_SANBOT_RESPONSES = {
 }
 
 EXACT_SANBOT_COMMANDS_CASEFOLD = {item.casefold() for item in EXACT_SANBOT_COMMANDS}
+
+
+@dataclass
+class ActiveReplyLimiter:
+    last_reply_at: dict[str, float] = field(default_factory=dict)
+    daily_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    def allow(
+        self,
+        group_id: str,
+        *,
+        now: float,
+        day: str,
+        cooldown_seconds: int,
+        daily_limit: int,
+    ) -> bool:
+        previous = self.last_reply_at.get(group_id)
+        if previous is not None and previous + max(0, cooldown_seconds) > now:
+            return False
+
+        key = (day, group_id)
+        count = self.daily_counts.get(key, 0)
+        if daily_limit > 0 and count >= daily_limit:
+            return False
+
+        self.daily_counts = {
+            stored_key: stored_count
+            for stored_key, stored_count in self.daily_counts.items()
+            if stored_key[0] == day
+        }
+        self.daily_counts[key] = count + 1
+        self.last_reply_at[group_id] = now
+        return True
 
 
 def normalize_text(text: str) -> str:
