@@ -210,6 +210,8 @@ class BotSettings:
     bot_display_name: str = "SanBot"
     manager_name: str = "管理者"
     manager_qq: str = "未配置"
+    enable_astrbot_coexist: bool = False
+    astrbot_coexist_group_ids: set[str] = field(default_factory=set)
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -344,6 +346,8 @@ class BotSettings:
             bot_display_name=os.getenv("BOT_DISPLAY_NAME") or "SanBot",
             manager_name=os.getenv("BOT_MANAGER_NAME") or "管理者",
             manager_qq=manager_qq,
+            enable_astrbot_coexist=_env_bool("ENABLE_ASTRBOT_COEXIST", False),
+            astrbot_coexist_group_ids=_env_id_set("ASTRBOT_COEXIST_GROUP_IDS"),
         )
 
 
@@ -509,6 +513,22 @@ def _is_feature_allowed(group_id: str, enabled: bool, allowed_group_ids: set[str
 
 def _is_jav_master_enabled(settings: BotSettings) -> bool:
     return settings.enable_javlibrary
+
+
+def _should_defer_to_astrbot(
+    group_id: str,
+    action: ParseAction,
+    message_text: str,
+    settings: BotSettings,
+) -> bool:
+    if not settings.enable_astrbot_coexist or str(group_id) not in settings.astrbot_coexist_group_ids:
+        return False
+    if action == ParseAction.HOME:
+        return True
+    if action != ParseAction.UNKNOWN:
+        return False
+    normalized = re.sub(r"\s+", "", message_text).strip()
+    return not normalized.isdigit() and re.match(r"(?i)^(?:JM|JAV|AV|DB|TG)", normalized) is None
 
 
 def _is_parse_action_allowed(group_id: str, action: ParseAction, settings: BotSettings) -> bool:
@@ -736,6 +756,32 @@ async def handle_group_message(
                 settings.bot_qq_id,
                 message_text,
             )
+        return
+
+    if _should_defer_to_astrbot(
+        group_id,
+        parse_result.action,
+        text_from_segments(event.get("message")),
+        settings,
+    ):
+        logger.info(
+            "Delegated message to AstrBot action=%s group_id=%s user_id=%s.",
+            parse_result.action,
+            group_id,
+            user_id,
+        )
+        spawn_task(
+            _record_command_audit(
+                backend,
+                group_id,
+                user_id,
+                "astrbot_delegate",
+                None,
+                "handled",
+                None,
+                0,
+            )
+        )
         return
 
     logger.info(
@@ -3230,6 +3276,7 @@ def _audit_command_label(command: str) -> str:
         "home": LangKey.AUDIT_COMMAND_HOME,
         "help": LangKey.AUDIT_COMMAND_HELP,
         "features": LangKey.AUDIT_COMMAND_FEATURES,
+        "astrbot_delegate": LangKey.AUDIT_COMMAND_ASTRBOT_DELEGATE,
         "history": LangKey.AUDIT_COMMAND_HISTORY,
         "group_history": LangKey.AUDIT_COMMAND_GROUP_HISTORY,
         "usage": LangKey.AUDIT_COMMAND_USAGE,

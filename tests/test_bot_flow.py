@@ -639,6 +639,111 @@ async def test_handle_group_message_sends_unknown_for_unknown_command(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_astrbot_coexist_delegates_unknown_at_message_silently(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    tasks = TaskCollector()
+    settings = replace(
+        _settings(tmp_path),
+        enable_astrbot_coexist=True,
+        astrbot_coexist_group_ids={"10001"},
+    )
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " 今晚吃什么？"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        tasks,
+    )
+
+    assert napcat.sent == []
+    assert tasks.count == 1
+
+
+@pytest.mark.asyncio
+async def test_astrbot_coexist_delegates_empty_at_silently(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(
+        _settings(tmp_path),
+        enable_astrbot_coexist=True,
+        astrbot_coexist_group_ids={"10001"},
+    )
+
+    await handle_group_message(
+        _group_event([{"type": "at", "data": {"qq": "12345"}}]),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent == []
+
+
+@pytest.mark.asyncio
+async def test_astrbot_coexist_does_not_affect_unlisted_group(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(
+        _settings(tmp_path),
+        enable_astrbot_coexist=True,
+        astrbot_coexist_group_ids={"99999"},
+    )
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " hello"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent == [("10001", "我看不懂你在输入什么(つд⊂)！输入‘帮助’获取命令列表")]
+
+
+@pytest.mark.asyncio
+async def test_astrbot_coexist_keeps_invalid_sanbot_like_command(tmp_path: Path) -> None:
+    napcat = FakeNapCat()
+    backend = FakeCreateBackend()
+    settings = replace(
+        _settings(tmp_path),
+        enable_astrbot_coexist=True,
+        astrbot_coexist_group_ids={"10001"},
+    )
+
+    await handle_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "12345"}},
+                {"type": "text", "data": {"text": " JMabc"}},
+            ]
+        ),
+        settings,
+        BotState(),
+        napcat,  # type: ignore[arg-type]
+        backend,  # type: ignore[arg-type]
+        TaskCollector(),
+    )
+
+    assert napcat.sent == [("10001", "我看不懂你在输入什么(つд⊂)！输入‘帮助’获取命令列表")]
+
+
+@pytest.mark.asyncio
 async def test_empty_at_sends_home_message(tmp_path: Path) -> None:
     napcat = FakeNapCat()
     backend = FakeCreateBackend()

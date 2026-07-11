@@ -362,6 +362,8 @@ collect_config() {
   CFG_ENABLE_HISTORY="$(ask_bool "启用任务历史查询" "true")"
   CFG_ENABLE_ADMIN="$(ask_bool "启用管理员命令和审计日志" "true")"
   CFG_ENABLE_HEALTH="$(ask_bool "启用后端健康监控" "true")"
+  printf 'AstrBot 共存模式只适用于已经单独部署并配置好 AstrBot 的环境。\n'
+  CFG_ENABLE_ASTRBOT_COEXIST="$(ask_bool "启用 AstrBot 共存消息分流" "false")"
 
   section "第 7 步：Cookie 和网络"
   printf 'JM 下载需要 AVS Cookie。现在不填也能安装，之后可编辑配置补充。\n'
@@ -399,6 +401,7 @@ collect_config() {
   CFG_TG_GROUPS="$(feature_groups "Telegram 转发" "$CFG_ENABLE_TG" true)"
   CFG_HISTORY_GROUPS="$(feature_groups "任务历史" "$CFG_ENABLE_HISTORY")"
   CFG_ADMIN_GROUPS="$(feature_groups "管理员命令" "$CFG_ENABLE_ADMIN")"
+  CFG_ASTRBOT_GROUPS="$(feature_groups "AstrBot 共存" "$CFG_ENABLE_ASTRBOT_COEXIST" true)"
 
   CFG_BACKEND_TOKEN="$(random_token)"
   CFG_ONEBOT_TOKEN="$(random_token)"
@@ -502,6 +505,8 @@ write_fresh_env() {
   set_env_value "$env_file" HISTORY_ALLOWED_GROUP_IDS "$CFG_HISTORY_GROUPS"
   set_env_value "$env_file" ENABLE_ADMIN_COMMANDS "$CFG_ENABLE_ADMIN"
   set_env_value "$env_file" ADMIN_ALLOWED_GROUP_IDS "$CFG_ADMIN_GROUPS"
+  set_env_value "$env_file" ENABLE_ASTRBOT_COEXIST "$CFG_ENABLE_ASTRBOT_COEXIST"
+  set_env_value "$env_file" ASTRBOT_COEXIST_GROUP_IDS "$CFG_ASTRBOT_GROUPS"
   set_env_value "$env_file" MAX_CONCURRENT_JOBS "$CFG_MAX_JOBS"
   set_env_value "$env_file" JM_DOWNLOAD_IMAGE_THREADS "$CFG_IMAGE_THREADS"
   set_env_value "$env_file" JM_DOWNLOAD_PHOTO_THREADS "$CFG_PHOTO_THREADS"

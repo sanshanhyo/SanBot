@@ -201,6 +201,7 @@
   "audit_command_home": "首页",
   "audit_command_help": "帮助",
   "audit_command_features": "功能",
+  "audit_command_astrbot_delegate": "转交 AstrBot",
   "audit_command_history": "我的任务",
   "audit_command_group_history": "最近任务",
   "audit_command_usage": "用法提示",

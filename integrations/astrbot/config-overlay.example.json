@@ -1,0 +1,38 @@
+{
+  "platform_settings": {
+    "unique_session": false,
+    "enable_id_white_list": true,
+    "id_whitelist": [
+      "904942764",
+      "961552805",
+      "706845140"
+    ],
+    "wl_ignore_admin_on_group": false,
+    "ignore_bot_self_message": true,
+    "reply_with_quote": true
+  },
+  "provider_ltm_settings": {
+    "group_icl_enable": true,
+    "group_message_max_cnt": 100,
+    "active_reply": {
+      "enable": true,
+      "method": "possibility_reply",
+      "possibility_reply": 0.03,
+      "whitelist": [
+        "904942764",
+        "961552805",
+        "706845140"
+      ]
+    }
+  },
+  "platform": [
+    {
+      "id": "sanbot-onebot",
+      "type": "aiocqhttp",
+      "enable": true,
+      "ws_reverse_host": "0.0.0.0",
+      "ws_reverse_port": 6199,
+      "ws_reverse_token": ""
+    }
+  ]
+}

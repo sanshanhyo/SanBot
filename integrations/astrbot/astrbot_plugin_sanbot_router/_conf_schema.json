@@ -1,0 +1,8 @@
+{
+  "allowed_group_ids": {
+    "description": "允许 AstrBot AI 对话的 QQ 群号",
+    "hint": "必须显式填写；列表之外的群消息会被插件静默拦截。",
+    "type": "list",
+    "default": []
+  }
+}

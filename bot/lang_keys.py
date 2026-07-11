@@ -176,6 +176,7 @@ class LangKey:
     AUDIT_COMMAND_HOME = 'audit_command_home'
     AUDIT_COMMAND_HELP = 'audit_command_help'
     AUDIT_COMMAND_FEATURES = 'audit_command_features'
+    AUDIT_COMMAND_ASTRBOT_DELEGATE = 'audit_command_astrbot_delegate'
     AUDIT_COMMAND_HISTORY = 'audit_command_history'
     AUDIT_COMMAND_GROUP_HISTORY = 'audit_command_group_history'
     AUDIT_COMMAND_USAGE = 'audit_command_usage'

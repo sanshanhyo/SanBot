@@ -1,0 +1,15 @@
+services:
+  astrbot:
+    image: soulter/astrbot:latest
+    container_name: sanbot-astrbot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:6185:6185"
+      - "127.0.0.1:6199:6199"
+    volumes:
+      - ./data:/AstrBot/data
+      - /etc/localtime:/etc/localtime:ro

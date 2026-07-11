@@ -1,0 +1,6 @@
+name: astrbot_plugin_sanbot_router
+display_name: SanBot 共存路由
+desc: 让 SanBot 业务命令与 AstrBot AI 对话安全共用同一个 QQ 账号。
+version: 0.1.0
+author: sanshanhyo
+repo: https://github.com/sanshanhyo/SanBot
