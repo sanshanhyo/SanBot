@@ -358,26 +358,12 @@ collect_config() {
     CFG_ENABLE_TG_AUTO=false
   fi
 
-  section "第 6 步：AI 群聊"
-  printf 'AI 功能需要 OpenAI 兼容模型接口，默认关闭；API Key 只会写入服务器本地 .env。\n'
-  CFG_ENABLE_LLM="$(ask_bool "启用 @机器人 的 AI 对话" "false")"
-  CFG_ENABLE_LLM_AMBIENT=false
-  CFG_LLM_API_BASE_URL="https://api.deepseek.com/v1"
-  CFG_LLM_API_KEY=""
-  CFG_LLM_MODEL=""
-  if [ "$CFG_ENABLE_LLM" = "true" ]; then
-    CFG_LLM_API_BASE_URL="$(ask "LLM API 地址" "https://api.deepseek.com/v1")"
-    CFG_LLM_MODEL="$(ask "LLM 模型名称（例如 deepseek-chat）" "deepseek-chat")"
-    CFG_LLM_API_KEY="$(ask_secret "LLM API Key")"
-    CFG_ENABLE_LLM_AMBIENT="$(ask_bool "允许机器人在未被 @ 时偶尔参与群聊" "false")"
-  fi
-
-  section "第 7 步：辅助功能"
+  section "第 6 步：辅助功能"
   CFG_ENABLE_HISTORY="$(ask_bool "启用任务历史查询" "true")"
   CFG_ENABLE_ADMIN="$(ask_bool "启用管理员命令和审计日志" "true")"
   CFG_ENABLE_HEALTH="$(ask_bool "启用后端健康监控" "true")"
 
-  section "第 8 步：Cookie 和网络"
+  section "第 7 步：Cookie 和网络"
   printf 'JM 下载需要 AVS Cookie。现在不填也能安装，之后可编辑配置补充。\n'
   CFG_JM_COOKIE="$(normalize_avs_cookie "$(ask_secret "JMComic AVS Cookie")")"
   CFG_JAV_COOKIE=""
@@ -387,13 +373,13 @@ collect_config() {
     CFG_JAV_PROXY="$(ask "JAV 请求代理（例如 http://127.0.0.1:7890，直连请留空）" "")"
   fi
 
-  section "第 9 步：性能"
+  section "第 8 步：性能"
   printf '2 核 2GB 服务器建议保持默认值。线程过高可能触发限流或耗尽内存。\n'
   CFG_MAX_JOBS="$(ask_numeric "同时下载任务数" "1")"
   CFG_IMAGE_THREADS="$(ask_numeric "JM 图片下载线程数" "8")"
   CFG_PHOTO_THREADS="$(ask_numeric "JM 分册下载线程数" "2")"
 
-  section "第 10 步：NapCat WebUI"
+  section "第 9 步：NapCat WebUI"
   printf '首次登录需要打开 WebUI 扫码。脚本会生成随机密码。\n'
   CFG_PUBLIC_WEBUI="$(ask_bool "临时允许通过服务器公网 IP 打开 WebUI" "true")"
   CFG_WEBUI_PORT="$(ask_numeric "WebUI 端口" "6099")"
@@ -411,8 +397,6 @@ collect_config() {
   CFG_STILLS_PDF_GROUPS="$(feature_groups "剧照 PDF" "$CFG_ENABLE_STILLS_PDF" true)"
   CFG_MISSAV_GROUPS="$(feature_groups "MissAV 在线播放" "$CFG_ENABLE_MISSAV" true)"
   CFG_TG_GROUPS="$(feature_groups "Telegram 转发" "$CFG_ENABLE_TG" true)"
-  CFG_LLM_GROUPS="$(feature_groups "AI 对话" "$CFG_ENABLE_LLM" true)"
-  CFG_LLM_AMBIENT_GROUPS="$(feature_groups "AI 群聊陪伴" "$CFG_ENABLE_LLM_AMBIENT" true)"
   CFG_HISTORY_GROUPS="$(feature_groups "任务历史" "$CFG_ENABLE_HISTORY")"
   CFG_ADMIN_GROUPS="$(feature_groups "管理员命令" "$CFG_ENABLE_ADMIN")"
 
@@ -513,14 +497,6 @@ write_fresh_env() {
   else
     set_env_value "$env_file" TG_MAX_FILE_BYTES "104857600"
   fi
-
-  set_env_value "$env_file" ENABLE_LLM_CHAT "$CFG_ENABLE_LLM"
-  set_env_value "$env_file" LLM_CHAT_ALLOWED_GROUP_IDS "$CFG_LLM_GROUPS"
-  set_env_value "$env_file" LLM_API_BASE_URL "$CFG_LLM_API_BASE_URL"
-  set_env_value "$env_file" LLM_API_KEY "$CFG_LLM_API_KEY"
-  set_env_value "$env_file" LLM_MODEL "$CFG_LLM_MODEL"
-  set_env_value "$env_file" ENABLE_LLM_AMBIENT_CHAT "$CFG_ENABLE_LLM_AMBIENT"
-  set_env_value "$env_file" LLM_AMBIENT_ALLOWED_GROUP_IDS "$CFG_LLM_AMBIENT_GROUPS"
 
   set_env_value "$env_file" ENABLE_HISTORY "$CFG_ENABLE_HISTORY"
   set_env_value "$env_file" HISTORY_ALLOWED_GROUP_IDS "$CFG_HISTORY_GROUPS"
