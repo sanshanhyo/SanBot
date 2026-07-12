@@ -114,3 +114,5 @@ def test_group_chat_plus_example_is_allowlisted_and_humanized() -> None:
     assert config["enable_humanize_mode"] is True
     assert config["enable_reply_density_limit"] is True
     assert config["enable_proactive_chat"] is False
+    assert config["enable_poke_after_reply"] is False
+    assert set(config["poke_enabled_groups"]) == set(config["enabled_groups"])

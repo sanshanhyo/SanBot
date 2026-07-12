@@ -41,6 +41,8 @@
   "enable_attention_mechanism": true,
   "enable_conversation_fatigue": true,
   "enable_typo_generator": false,
+  "poke_enabled_groups": ["904942764", "961552805", "706845140"],
+  "enable_poke_after_reply": false,
   "enable_humanize_mode": true,
   "humanize_silent_mode_threshold": 4,
   "humanize_silent_max_duration": 600,
