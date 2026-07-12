@@ -17,9 +17,7 @@ class SanBotRouter(Star):
         super().__init__(context)
         self.config = config
 
-    @filter.event_message_type(
-        filter.EventMessageType.GROUP_MESSAGE, priority=maxsize - 100
-    )
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=maxsize)
     async def route_group_message(self, event: AstrMessageEvent):
         group_id = str(event.get_group_id() or "")
         if not group_id or group_id not in self._allowed_groups():
