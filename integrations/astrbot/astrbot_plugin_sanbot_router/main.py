@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-from datetime import date
 from sys import maxsize
 
 from astrbot.api import AstrBotConfig, logger
@@ -10,14 +8,14 @@ from astrbot.api.message_components import Plain
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 
-from .routing import ActiveReplyLimiter, is_sanbot_command, normalize_text
+from .meme_knowledge import build_meme_context
+from .routing import is_sanbot_command, normalize_text
 
 
 class SanBotRouter(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
-        self.active_reply_limiter = ActiveReplyLimiter()
 
     @filter.event_message_type(
         filter.EventMessageType.GROUP_MESSAGE, priority=maxsize - 100
@@ -45,35 +43,22 @@ class SanBotRouter(Star):
             return
         if event.is_at_or_wake_command:
             return
-        # Ordinary messages continue into AstrBot's built-in GroupChatContext.
-        # Its active_reply feature owns context collection and probabilistic replies.
+        # Ordinary messages continue into the configured AstrBot group-chat engine.
 
     @filter.on_llm_request(priority=maxsize - 100)
-    async def guard_active_reply(
+    async def inject_meme_knowledge(
         self,
         event: AstrMessageEvent,
-        _request: ProviderRequest,
+        request: ProviderRequest,
     ) -> None:
-        if event.is_at_or_wake_command:
-            return
-
         group_id = str(event.get_group_id() or "")
         if not group_id or group_id not in self._allowed_groups():
-            event.stop_event()
             return
 
-        allowed = self.active_reply_limiter.allow(
-            group_id,
-            now=time.time(),
-            day=date.today().isoformat(),
-            cooldown_seconds=max(
-                0, int(self.config.get("active_reply_cooldown_seconds", 600))
-            ),
-            daily_limit=max(0, int(self.config.get("active_reply_daily_limit", 30))),
-        )
-        if not allowed:
-            logger.debug("AstrBot active reply suppressed by group limit: %s", group_id)
-            event.stop_event()
+        context = build_meme_context(event.message_str)
+        if context:
+            request.system_prompt = f"{request.system_prompt}\n\n{context}".strip()
+            logger.debug("Injected Xiaosan meme knowledge for group %s", group_id)
 
     def _allowed_groups(self) -> set[str]:
         values = self.config.get("allowed_group_ids", [])

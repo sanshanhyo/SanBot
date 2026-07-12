@@ -4,16 +4,5 @@
     "hint": "必须显式填写；列表之外的群消息会被插件静默拦截。",
     "type": "list",
     "default": []
-  },
-  "active_reply_cooldown_seconds": {
-    "description": "同一群两次主动回复的最短间隔（秒）",
-    "type": "int",
-    "default": 600
-  },
-  "active_reply_daily_limit": {
-    "description": "每个群每天最多主动回复次数",
-    "hint": "设为 0 表示不限量。",
-    "type": "int",
-    "default": 30
   }
 }

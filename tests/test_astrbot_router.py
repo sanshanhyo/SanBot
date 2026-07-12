@@ -5,10 +5,10 @@ from pathlib import Path
 
 import yaml
 
-from integrations.astrbot.astrbot_plugin_sanbot_router.routing import (
-    ActiveReplyLimiter,
-    is_sanbot_command,
+from integrations.astrbot.astrbot_plugin_sanbot_router.meme_knowledge import (
+    build_meme_context,
 )
+from integrations.astrbot.astrbot_plugin_sanbot_router.routing import is_sanbot_command
 
 
 def test_sanbot_business_commands_are_reserved() -> None:
@@ -40,24 +40,23 @@ def test_normal_ai_chat_is_not_reserved_for_sanbot() -> None:
     assert not is_sanbot_command("SanBot 你在吗")
 
 
-def test_active_reply_limiter_enforces_cooldown_and_daily_limit() -> None:
-    limiter = ActiveReplyLimiter()
+def test_meme_knowledge_matches_aliases_without_dumping_unrelated_entries() -> None:
+    context = build_meme_context("听见你说，外战看滔博")
 
-    assert limiter.allow(
-        "10001", now=1000, day="2026-07-11", cooldown_seconds=600, daily_limit=2
-    )
-    assert not limiter.allow(
-        "10001", now=1200, day="2026-07-11", cooldown_seconds=600, daily_limit=2
-    )
-    assert limiter.allow(
-        "10001", now=1600, day="2026-07-11", cooldown_seconds=600, daily_limit=2
-    )
-    assert not limiter.allow(
-        "10001", now=2200, day="2026-07-11", cooldown_seconds=600, daily_limit=2
-    )
-    assert limiter.allow(
-        "10001", now=2200, day="2026-07-12", cooldown_seconds=600, daily_limit=2
-    )
+    assert "突然的陀螺" in context
+    assert "反讽" in context
+    assert "飞八分钱" not in context
+
+
+def test_meme_knowledge_recognizes_f8fq_case_insensitively() -> None:
+    context = build_meme_context("F8FQ 到底是什么意思")
+
+    assert "张顺飞" in context
+    assert "侮辱性" in context
+
+
+def test_meme_knowledge_ignores_normal_chat() -> None:
+    assert build_meme_context("今天晚上吃什么") == ""
 
 
 def test_astrbot_compose_binds_management_ports_to_localhost() -> None:
@@ -81,11 +80,9 @@ def test_production_plugin_example_uses_explicit_group_allowlist() -> None:
     )
 
     assert set(config["allowed_group_ids"]) == {"904942764", "961552805", "706845140"}
-    assert config["active_reply_cooldown_seconds"] == 600
-    assert config["active_reply_daily_limit"] == 30
 
 
-def test_astrbot_overlay_enables_builtin_active_reply_for_allowlisted_groups() -> None:
+def test_astrbot_overlay_leaves_active_reply_to_group_chat_plus() -> None:
     root = Path(__file__).resolve().parents[1]
     config = json.loads(
         (root / "integrations" / "astrbot" / "config-overlay.example.json").read_text(
@@ -97,6 +94,23 @@ def test_astrbot_overlay_enables_builtin_active_reply_for_allowlisted_groups() -
     assert config["platform_settings"]["enable_id_white_list"] is True
     assert config["platform_settings"]["ignore_bot_self_message"] is True
     assert config["provider_ltm_settings"]["group_icl_enable"] is True
-    assert active_reply["enable"] is True
-    assert active_reply["possibility_reply"] == 0.03
+    assert active_reply["enable"] is False
+    assert active_reply["possibility_reply"] == 0.0
     assert set(active_reply["whitelist"]) == {"904942764", "961552805", "706845140"}
+
+
+def test_group_chat_plus_example_is_allowlisted_and_humanized() -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = json.loads(
+        (
+            root / "integrations" / "astrbot" / "group-chat-plus-config.example.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert set(config["enabled_groups"]) == {"904942764", "961552805", "706845140"}
+    assert config["decision_ai_persona_name"] == "小散"
+    assert config["initial_probability"] > 0.1
+    assert config["keyword_smart_mode"] is True
+    assert config["enable_humanize_mode"] is True
+    assert config["enable_reply_density_limit"] is True
+    assert config["enable_proactive_chat"] is False
